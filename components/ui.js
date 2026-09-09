@@ -1,5 +1,11 @@
-'use client';
-
+/*
+ * Deliberately NOT marked 'use client'. Nothing here uses hooks or browser
+ * APIs, so these render in Server Components too — which is what lets the
+ * dashboard pass an icon component into <EmptyState icon={Star} />. Marking
+ * the file 'use client' would put a serialization boundary in the way and
+ * that prop would throw. Imported from a Client Component, these are bundled
+ * client-side as usual, so event handlers keep working.
+ */
 import { Loader2 } from 'lucide-react';
 
 export function cn(...parts) {
