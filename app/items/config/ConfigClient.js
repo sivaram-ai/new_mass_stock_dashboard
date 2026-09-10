@@ -16,7 +16,7 @@ import {
 import { createClient } from '@/lib/supabase/client';
 import { UNITS } from '@/lib/constants';
 import { compare, nextSort } from '@/lib/table';
-import { isLowStock, lowStockRowClass, parseAlertSize } from '@/lib/stock';
+import { isLowOrOutOfStock, isLowStock, lowStockRowClass, parseAlertSize } from '@/lib/stock';
 import {
   ITEM_LIST_COLUMNS,
   MIGRATION_HINT,
@@ -46,6 +46,9 @@ const BLANK_ITEM = {
   is_important: false,
   display_order: 0,
   opening_stock: '',
+  // Not an editable field — carried so the Alert size hint can say whether the
+  // threshold being typed would actually flag this item.
+  current_stock: 0,
 };
 
 const BLANK_FILTERS = {
@@ -170,6 +173,7 @@ export default function ConfigClient({
       if (filters.stock === 'in' && row.current_stock <= 0) return false;
       if (filters.stock === 'out' && row.current_stock > 0) return false;
       if (filters.stock === 'low' && !isLowStock(row)) return false;
+      if (filters.stock === 'lowOrOut' && !isLowOrOutOfStock(row)) return false;
       return true;
     });
 
@@ -187,6 +191,36 @@ export default function ConfigClient({
   function toggleSort(key) {
     setSort((current) => nextSort(current, key));
   }
+
+  /*
+   * Says, in the form, whether the threshold being typed would flag THIS item
+   * right now. Without it the only way to find out was to save and go looking
+   * at the table — and a perfectly correct threshold below current stock looks
+   * exactly like a save that did not work.
+   */
+  const alertPreview = useMemo(() => {
+    const parsed = parseAlertSize(itemForm.alert_size);
+    if (!parsed.ok) return { tone: 'error', text: parsed.error };
+
+    const threshold = parsed.value;
+    if (!threshold) {
+      return { tone: 'muted', text: 'No alert — this item is never highlighted, even at zero.' };
+    }
+
+    const stock = editingItemId
+      ? Number(itemForm.current_stock ?? 0)
+      : Number(itemForm.opening_stock || 0);
+
+    return isLowStock({ current_stock: stock, alert_size: threshold })
+      ? {
+          tone: 'flag',
+          text: `Stock is ${stock} — at or below ${threshold}, so this item is highlighted as low.`,
+        }
+      : {
+          tone: 'ok',
+          text: `Stock is ${stock} — above ${threshold}, so it is not highlighted until stock drops to ${threshold}.`,
+        };
+  }, [itemForm.alert_size, itemForm.current_stock, itemForm.opening_stock, editingItemId]);
 
   function flash(message) {
     setNotice(message);
@@ -226,6 +260,16 @@ export default function ConfigClient({
       setError(updateError.message);
       return;
     }
+    // Same reasoning as the item edit above: show it now, reconcile after.
+    setCategories((current) =>
+      current.map((c) => (c.id === category.id ? { ...c, name } : c))
+    );
+    setItems((current) =>
+      current.map((item) =>
+        item.category_id === category.id ? { ...item, category_name: name } : item
+      )
+    );
+
     setEditingCategory(null);
     flash('Category renamed.');
     load();
@@ -275,6 +319,7 @@ export default function ConfigClient({
       is_important: Boolean(item.is_important),
       display_order: item.display_order ?? 0,
       opening_stock: '',
+      current_stock: Number(item.current_stock ?? 0),
     });
     setItemModalOpen(true);
   }
@@ -323,6 +368,33 @@ export default function ConfigClient({
         return;
       }
       setAlertsSupported(alertSizeSupported);
+
+      /*
+       * Patch the row in place rather than waiting for load() below.
+       * load() refetches every category and every item — two round trips — and
+       * until it returned the table still showed the old values, which read as
+       * "the edit did not save". The refetch still runs afterwards and
+       * reconciles anything the server changed.
+       */
+      const nextCategoryName = payload.category_id
+        ? (categories.find((category) => category.id === payload.category_id)?.name ?? '')
+        : '';
+
+      setItems((current) =>
+        current.map((item) =>
+          item.id === editingItemId
+            ? {
+                ...item,
+                ...payload,
+                // persistItem drops alert_size when the column is absent, so
+                // do not show a value that was never written.
+                alert_size: alertSizeSupported ? payload.alert_size : (item.alert_size ?? null),
+                category_name: nextCategoryName,
+              }
+            : item
+        )
+      );
+
       flash(
         alertSizeSupported
           ? `"${name}" updated.`
@@ -670,8 +742,9 @@ export default function ConfigClient({
                     >
                       <option value="">All</option>
                       <option value="in">In stock</option>
-                      <option value="out">Out of stock</option>
                       <option value="low">Low stock</option>
+                      <option value="out">Out of stock</option>
+                      <option value="lowOrOut">Low / out of stock</option>
                     </Select>
                   </td>
                   <td className="px-4 py-2" />
@@ -822,11 +895,7 @@ export default function ConfigClient({
               </Select>
             </Field>
 
-            <Field
-              label="Alert size"
-              htmlFor="item-alert"
-              hint="Highlight when stock falls to this or below. Blank or 0 = no alert."
-            >
+            <Field label="Alert size" htmlFor="item-alert">
               <Input
                 id="item-alert"
                 type="number"
@@ -838,6 +907,20 @@ export default function ConfigClient({
                 }
                 placeholder="No alert"
               />
+              <p
+                data-testid="alert-preview"
+                className={[
+                  'mt-1.5 text-xs',
+                  alertPreview.tone === 'error' && 'text-red-600',
+                  alertPreview.tone === 'flag' && 'font-medium text-red-600',
+                  alertPreview.tone === 'ok' && 'text-emerald-700',
+                  alertPreview.tone === 'muted' && 'text-slate-400',
+                ]
+                  .filter(Boolean)
+                  .join(' ')}
+              >
+                {alertPreview.text}
+              </p>
             </Field>
 
             <Field

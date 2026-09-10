@@ -3,7 +3,7 @@ import { formatDistanceToNow } from 'date-fns';
 import { AlertTriangle, Boxes, FolderOpen, Star, TrendingDown, TrendingUp } from 'lucide-react';
 import { requireUser } from '@/lib/auth';
 import { createClient } from '@/lib/supabase/server';
-import { isLowStock } from '@/lib/stock';
+import { isLowOrOutOfStock, isLowStock } from '@/lib/stock';
 import { MIGRATION_HINT, selectItems } from '@/lib/items';
 import { Alert, Badge, Card, EmptyState } from '@/components/ui';
 
@@ -26,15 +26,25 @@ function StockPill({ item }) {
   );
 }
 
-function Stat({ icon: Icon, label, value, tone = 'slate' }) {
+/**
+ * A stat tile.
+ *
+ * With an href starting "#" it scrolls to the matching section further down the
+ * page; with a route it navigates there through next/link, so the click is a
+ * client-side transition rather than a full reload. Without an href it stays
+ * inert, so a tile whose count is zero never invites a click that would scroll
+ * to nothing.
+ */
+function Stat({ icon: Icon, label, value, tone = 'slate', href }) {
   const tones = {
     slate: 'bg-slate-100 text-slate-600',
     red: 'bg-red-100 text-red-600',
     indigo: 'bg-indigo-100 text-indigo-600',
     amber: 'bg-amber-100 text-amber-600',
   };
-  return (
-    <Card className="flex items-center gap-3 p-4">
+
+  const body = (
+    <>
       <span className={`grid h-10 w-10 shrink-0 place-items-center rounded-lg ${tones[tone]}`}>
         <Icon className="h-5 w-5" aria-hidden="true" />
       </span>
@@ -42,6 +52,26 @@ function Stat({ icon: Icon, label, value, tone = 'slate' }) {
         <p className="tnum text-xl font-semibold text-slate-900">{value}</p>
         <p className="truncate text-xs text-slate-500">{label}</p>
       </div>
+    </>
+  );
+
+  if (!href) {
+    return <Card className="flex items-center gap-3 p-4">{body}</Card>;
+  }
+
+  const linkClass = 'flex items-center gap-3 p-4';
+
+  return (
+    <Card className="transition-colors hover:border-slate-300 hover:bg-slate-50">
+      {href.startsWith('#') ? (
+        <a href={href} className={linkClass}>
+          {body}
+        </a>
+      ) : (
+        <Link href={href} className={linkClass}>
+          {body}
+        </Link>
+      )}
     </Card>
   );
 }
@@ -75,7 +105,7 @@ export default async function DashboardPage({ searchParams }) {
 
   const important = items.filter((item) => item.is_important);
   const outOfStock = items.filter((item) => Number(item.current_stock) <= 0);
-  const lowStock = items.filter((item) => isLowStock(item) || Number(item.current_stock) <= 0);
+  const lowStock = items.filter(isLowOrOutOfStock);
   const uncategorised = items.filter((item) => !item.category_id);
 
   // Lowest stock first, so whatever needs reordering is what you see without
@@ -84,7 +114,27 @@ export default async function DashboardPage({ searchParams }) {
     Number(a.current_stock ?? 0) - Number(b.current_stock ?? 0) ||
     String(a.name).localeCompare(String(b.name));
 
+  /*
+   * "Low / out of stock" leads the list: it is what gets acted on first, and it
+   * is where the stat tile above links to. It cuts across the real categories
+   * rather than replacing them, so these items still also appear under their
+   * own category below — deliberately, since one panel answers "what do I
+   * reorder?" and the other answers "what is in this category?".
+   *
+   * Dropped entirely when nothing needs attention, so the panel is never an
+   * empty box; the tile above stops linking in that case too.
+   */
   const groups = [
+    ...(lowStock.length
+      ? [
+          {
+            key: 'low-stock',
+            name: 'Low / out of stock',
+            members: [...lowStock].sort(byLowestStock),
+            highlight: true,
+          },
+        ]
+      : []),
     ...categories.map((category) => ({
       key: category.id,
       name: category.name,
@@ -129,19 +179,37 @@ export default async function DashboardPage({ searchParams }) {
       )}
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <Stat icon={Boxes} label="Items tracked" value={items.length} tone="indigo" />
-        <Stat icon={Star} label="Important items" value={important.length} tone="amber" />
-        <Stat icon={FolderOpen} label="Categories" value={categories.length} />
+        <Stat
+          icon={Boxes}
+          label="Items tracked"
+          value={items.length}
+          tone="indigo"
+          href="/items/view"
+        />
+        <Stat
+          icon={Star}
+          label="Important items"
+          value={important.length}
+          tone="amber"
+          href="#important-items"
+        />
+        <Stat
+          icon={FolderOpen}
+          label="Categories"
+          value={categories.length}
+          href="#stock-by-category"
+        />
         <Stat
           icon={AlertTriangle}
           label={`Low / out of stock${outOfStock.length ? ` (${outOfStock.length} out)` : ''}`}
           value={lowStock.length}
           tone={lowStock.length ? 'red' : 'slate'}
+          href={lowStock.length ? '#low-stock' : undefined}
         />
       </div>
 
       {/* Important items — always on screen, ordered by display_order. */}
-      <Card>
+      <Card id="important-items" className="scroll-mt-44 lg:scroll-mt-24">
         <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
           <div className="flex items-center gap-2">
             <Star className="h-4 w-4 text-amber-500" aria-hidden="true" />
@@ -162,7 +230,7 @@ export default async function DashboardPage({ searchParams }) {
               <li
                 key={item.id}
                 className={`flex items-center justify-between gap-3 p-4 ${
-                  isLowStock(item) || Number(item.current_stock) <= 0 ? 'bg-red-50' : 'bg-white'
+                  isLowOrOutOfStock(item) ? 'bg-red-50' : 'bg-white'
                 }`}
               >
                 <div className="min-w-0">
@@ -180,7 +248,7 @@ export default async function DashboardPage({ searchParams }) {
 
       <div className="grid gap-6 lg:grid-cols-3">
         {/* Categories — grouped stock, for planning what to order. */}
-        <Card className="lg:col-span-2">
+        <Card id="stock-by-category" className="scroll-mt-44 lg:col-span-2 lg:scroll-mt-24">
           <div className="flex items-center gap-2 border-b border-slate-200 px-5 py-3">
             <FolderOpen className="h-4 w-4 text-slate-400" aria-hidden="true" />
             <h2 className="text-sm font-semibold text-slate-900">Stock by category</h2>
@@ -193,15 +261,25 @@ export default async function DashboardPage({ searchParams }) {
           ) : (
             <div className="grid gap-px bg-slate-200 sm:grid-cols-2">
               {groups.map((group) => {
-                const empty = group.members.filter(
-                  (item) => isLowStock(item) || Number(item.current_stock) <= 0
-                ).length;
+                const empty = group.members.filter(isLowOrOutOfStock).length;
                 return (
-                  <section key={group.key} className="bg-white p-4">
+                  <section
+                    key={group.key}
+                    /*
+                     * The id is the stat tile's jump target. scroll-mt keeps
+                     * the heading clear of the sticky top bar, which wraps on
+                     * narrow viewports: measured at 61px on desktop and 145px
+                     * once it wraps, so the smaller margin is reserved for lg.
+                     */
+                    id={group.highlight ? 'low-stock' : undefined}
+                    className={`scroll-mt-44 p-4 lg:scroll-mt-24 ${
+                      group.highlight ? 'bg-red-50/60' : 'bg-white'
+                    }`}
+                  >
                     <div className="mb-2 flex items-center justify-between gap-2">
                       <h3 className="truncate text-sm font-medium text-slate-900">{group.name}</h3>
                       <div className="flex shrink-0 items-center gap-1.5">
-                        {empty > 0 && <Badge tone="red">{empty} low</Badge>}
+                        {empty > 0 && !group.highlight && <Badge tone="red">{empty} low</Badge>}
                         <Badge>{group.members.length} items</Badge>
                       </div>
                     </div>
@@ -216,7 +294,7 @@ export default async function DashboardPage({ searchParams }) {
                        */
                       <ul className="max-h-56 divide-y divide-slate-100 overflow-y-auto pr-1">
                         {group.members.map((item) => {
-                          const low = isLowStock(item) || Number(item.current_stock) <= 0;
+                          const low = isLowOrOutOfStock(item);
                           return (
                             <li
                               key={item.id}

@@ -16,7 +16,7 @@ import {
 import { createClient } from '@/lib/supabase/client';
 import { canCredit } from '@/lib/constants';
 import { compare, nextSort } from '@/lib/table';
-import { isLowStock, lowStockRowClass } from '@/lib/stock';
+import { isLowOrOutOfStock, isLowStock, lowStockRowClass } from '@/lib/stock';
 import { ITEM_LIST_COLUMNS, MIGRATION_HINT, normaliseItemRow, selectItems } from '@/lib/items';
 import Modal from '@/components/Modal';
 import { ToastStack, useToasts } from '@/components/Toast';
@@ -159,6 +159,10 @@ export default function ViewClient({
       if (filters.important === 'no' && row.is_important) return false;
       if (filters.stock === 'in' && row.current_stock <= 0) return false;
       if (filters.stock === 'out' && row.current_stock > 0) return false;
+      // "low" is strictly below a configured alert threshold; "lowOrOut" also
+      // catches items sitting at zero that have no threshold set.
+      if (filters.stock === 'low' && !isLowStock(row)) return false;
+      if (filters.stock === 'lowOrOut' && !isLowOrOutOfStock(row)) return false;
       return true;
     });
 
@@ -495,7 +499,9 @@ export default function ViewClient({
                   >
                     <option value="">All</option>
                     <option value="in">In stock</option>
+                    <option value="low">Low stock</option>
                     <option value="out">Out of stock</option>
+                    <option value="lowOrOut">Low / out of stock</option>
                   </Select>
                 </td>
                 <td className="px-3 py-2" />

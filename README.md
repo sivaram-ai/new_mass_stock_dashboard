@@ -242,11 +242,34 @@ Work through this in order — each step sets up the next.
 35. Try a password under 8 characters → rejected with a clear message.
 36. Try changing **your own** role → refused: "You cannot change your own role."
 
+**Low stock filtering and the dashboard section**
+
+37. On Inventory, open the **Stock** column filter: it offers All / In stock / Low stock / Out of stock / **Low / out of stock**.
+38. Pick **Low stock** → only items at or below their alert size. Pick **Out of stock** → only items at zero. Pick **Low / out of stock** → exactly the two sets combined.
+39. On the Dashboard, **Stock by category** starts with a tinted **Low / out of stock** section listing those same items, lowest stock first.
+40. Its item count matches the number on the **Low / out of stock** tile at the top of the page.
+41. Click that tile → the page scrolls to the section and its heading is not hidden behind the sticky top bar.
+
+**Dashboard stat tiles**
+
+42. Click **Items tracked** → lands on View Items with the table already populated.
+43. Click **Important items** → scrolls to the Important items panel.
+44. Click **Categories** → scrolls to the Stock by category panel.
+45. In every case the section heading sits below the sticky top bar, not behind it.
+
+**Alert size editing**
+
+46. Edit an item and change its **Alert size**. The line under the field updates as you type, saying whether that threshold flags the item at its current stock.
+47. Set a threshold **below** current stock → the hint says it will not highlight yet, and the row stays plain after saving. This is correct, not a failed save.
+48. Set a threshold **at or above** current stock → the hint turns red, and after saving the row is tinted with a `Low` badge.
+49. Either way the **Alert at** cell updates the moment the dialog closes, without waiting for a refresh.
+50. Clear the field → the hint reads "No alert", and after saving the cell shows `—` with the tint removed.
+
 **Navigation**
 
-37. Click between Dashboard, View Items, Item Config, History and Admin. A skeleton appears immediately on each click.
-38. No page shows a full-page spinner after it has already rendered — the data is there when the page is.
-39. On History, page forward and re-sort: the "of N movements" total stays correct without being recounted. Apply a filter and it updates; clear it and it returns.
+51. Click between Dashboard, View Items, Item Config, History and Admin. A skeleton appears immediately on each click.
+52. No page shows a full-page spinner after it has already rendered — the data is there when the page is.
+53. On History, page forward and re-sort: the "of N movements" total stays correct without being recounted. Apply a filter and it updates; clear it and it returns.
 
 ### Build check
 
@@ -426,6 +449,8 @@ Every item carries an optional **Alert size** — the level at or below which it
 
 The rule lives in one place, `lib/stock.js` (`isLowStock`), so every screen agrees.
 
+**The threshold is a floor, not a switch.** Setting an alert size does not highlight the item straight away — it highlights once stock *falls to* that level. An item with 86 kg in stock and an alert size of 10 is behaving correctly by staying unhighlighted; it will turn red when it drops to 10. The edit form spells this out live as you type, e.g. *"Stock is 86.27 — above 10, so it is not highlighted until stock drops to 10."*
+
 **Maintaining it** — Item Config → **New item** / **Edit**. Set it to the level at which you would reorder: an item you reorder at 10kg gets `10`. Leave it blank for anything you do not want to track. Only Admin and Manager can change it, the same as any other item field.
 
 **Where the highlight appears:**
@@ -437,6 +462,17 @@ The rule lives in one place, `lib/stock.js` (`isLowStock`), so every screen agre
 | Inventory (`/items/view`) | Row tinted red, `Low` badge next to the name |
 | Item Config | Row tinted red, `Low` badge, plus the **Alert at** column |
 | Dashboard stat tile | "Low / out of stock" counts both |
+
+**Filtering by stock state.** The Stock column filter on both Inventory and Item Config offers:
+
+| Option | Shows |
+| --- | --- |
+| In stock | Anything above zero |
+| Low stock | `alert_size > 0` and stock at or below it |
+| Out of stock | Stock at zero or below |
+| Low / out of stock | Either of the two above — the same set the dashboard tile counts |
+
+"Low stock" and "Out of stock" are separate because they answer different questions: one is "running down against the threshold I set", the other is "empty right now, threshold or not". "Low / out of stock" is the union, and is what the dashboard's tile and its category section both use — so the count on the tile always matches the rows you land on.
 
 The **Alert size value itself is deliberately not shown on the Inventory page** — staff working stock only need the visual signal. It is visible and editable in Item Config, where admins maintain it.
 
@@ -464,7 +500,22 @@ Implementation: `components/Toast.js` (`useToasts` hook + `ToastStack`).
 
 ### Stock by category
 
-The dashboard panel lists **every** item in each category — there is no truncation and no "+N more".
+**The stat tiles are shortcuts.** Each of the four tiles across the top of the dashboard goes somewhere:
+
+| Tile | Goes to |
+| --- | --- |
+| Items tracked | The **View Items** page (a client-side navigation, not a reload) |
+| Important items | The **Important items** panel below |
+| Categories | The **Stock by category** panel below |
+| Low / out of stock | The **Low / out of stock** section inside that panel |
+
+The three in-page tiles scroll to their section with the heading clear of the sticky top bar. The Low / out of stock tile only links when something actually needs attention — with nothing low, the section is not rendered and the tile stays inert rather than scrolling nowhere.
+
+**"Low / out of stock" leads the list.** The first section is a cross-cutting group holding every item that is below its alert threshold or empty, sorted lowest stock first. It is tinted so it reads as a warning rather than as another category, and it is what the **Low / out of stock** stat tile at the top of the dashboard jumps to when clicked.
+
+These items also still appear under their own real category further down. That repetition is deliberate: the top section answers "what do I reorder?", the ones below answer "what is in this category?". When nothing needs attention the section is omitted entirely and the tile stops being a link, so you never click through to an empty box.
+
+The rest of the panel lists **every** item in each category — there is no truncation and no "+N more".
 
 - Each category list scrolls inside its own fixed-height box, so a category with 40 items does not stretch the page.
 - Items are sorted **lowest stock first**, so whatever needs reordering is what you see without scrolling. Ties break by name.

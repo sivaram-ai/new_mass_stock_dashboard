@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { isLowStock, lowStockRowClass, parseAlertSize } from '@/lib/stock';
+import {
+  isLowOrOutOfStock,
+  isLowStock,
+  isOutOfStock,
+  lowStockRowClass,
+  parseAlertSize,
+} from '@/lib/stock';
 
 describe('isLowStock', () => {
   it('flags an item at or below its threshold', () => {
@@ -78,5 +84,58 @@ describe('lowStockRowClass', () => {
     const cls = lowStockRowClass({ current_stock: 1, alert_size: 5 }, { selected: true });
     expect(cls).toContain('bg-indigo-50/50');
     expect(cls).not.toContain('bg-red-50');
+  });
+});
+
+describe('isOutOfStock', () => {
+  it('flags zero and below', () => {
+    expect(isOutOfStock({ current_stock: 0 })).toBe(true);
+    expect(isOutOfStock({ current_stock: -1 })).toBe(true);
+  });
+
+  it('ignores the alert threshold entirely', () => {
+    // Empty is empty, whether or not anyone configured a threshold.
+    expect(isOutOfStock({ current_stock: 0, alert_size: null })).toBe(true);
+    expect(isOutOfStock({ current_stock: 0, alert_size: 0 })).toBe(true);
+    expect(isOutOfStock({ current_stock: 5, alert_size: 99 })).toBe(false);
+  });
+
+  it('survives junk input', () => {
+    expect(isOutOfStock(null)).toBe(false);
+    expect(isOutOfStock({ current_stock: 'abc' })).toBe(false);
+    expect(isOutOfStock({})).toBe(true); // missing stock reads as 0
+  });
+});
+
+describe('isLowOrOutOfStock', () => {
+  it('catches items below a threshold', () => {
+    expect(isLowOrOutOfStock({ current_stock: 5, alert_size: 10 })).toBe(true);
+  });
+
+  it('catches empty items that have NO threshold set', () => {
+    // This is the case plain isLowStock misses, and the reason the combined
+    // rule exists: the dashboard tile and its section must agree.
+    expect(isLowStock({ current_stock: 0, alert_size: null })).toBe(false);
+    expect(isLowOrOutOfStock({ current_stock: 0, alert_size: null })).toBe(true);
+    expect(isLowOrOutOfStock({ current_stock: 0, alert_size: 0 })).toBe(true);
+  });
+
+  it('leaves healthy stock alone', () => {
+    expect(isLowOrOutOfStock({ current_stock: 50, alert_size: 10 })).toBe(false);
+    expect(isLowOrOutOfStock({ current_stock: 50, alert_size: null })).toBe(false);
+  });
+
+  it('is exactly the union of the two rules', () => {
+    const cases = [
+      { current_stock: 0, alert_size: 0 },
+      { current_stock: 0, alert_size: 10 },
+      { current_stock: 5, alert_size: 10 },
+      { current_stock: 50, alert_size: 10 },
+      { current_stock: 50, alert_size: null },
+      { current_stock: -3, alert_size: null },
+    ];
+    for (const item of cases) {
+      expect(isLowOrOutOfStock(item)).toBe(isLowStock(item) || isOutOfStock(item));
+    }
   });
 });

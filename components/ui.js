@@ -96,9 +96,9 @@ export function Field({ label, hint, htmlFor, children }) {
   );
 }
 
-export function Card({ className, children }) {
+export function Card({ className, children, id }) {
   return (
-    <div className={cn('rounded-xl border border-slate-200 bg-white shadow-sm', className)}>
+    <div id={id} className={cn('rounded-xl border border-slate-200 bg-white shadow-sm', className)}>
       {children}
     </div>
   );
