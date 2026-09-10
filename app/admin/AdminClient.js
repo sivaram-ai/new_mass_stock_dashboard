@@ -2,12 +2,14 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { format } from 'date-fns';
-import { ShieldCheck, UserPlus, Users } from 'lucide-react';
+import { Pencil, ShieldCheck, UserPlus, Users } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
+import Modal from '@/components/Modal';
 import { Alert, Badge, Button, Card, EmptyState, Field, Input, Select, Spinner } from '@/components/ui';
 
 const BLANK_USER = { fullName: '', email: '', password: '', roleId: '' };
 const BLANK_ROLE = { roleName: '', description: '' };
+const BLANK_EDIT = { id: '', email: '', fullName: '', password: '', roleId: '' };
 
 export default function AdminClient() {
   const supabase = createClient();
@@ -26,6 +28,11 @@ export default function AdminClient() {
   const [userBusy, setUserBusy] = useState(false);
   const [userError, setUserError] = useState('');
   const [userNotice, setUserNotice] = useState('');
+
+  const [editOpen, setEditOpen] = useState(false);
+  const [editForm, setEditForm] = useState(BLANK_EDIT);
+  const [editBusy, setEditBusy] = useState(false);
+  const [editError, setEditError] = useState('');
 
   /**
    * Every /api/admin/* call carries the caller's access token; the route
@@ -125,6 +132,52 @@ export default function AdminClient() {
       setUserError(err.message);
     } finally {
       setUserBusy(false);
+    }
+  }
+
+  function openEditUser(user) {
+    setEditError('');
+    setEditForm({
+      id: user.id,
+      email: user.email,
+      fullName: user.full_name ?? '',
+      // Always blank: this is a "set a new password" box, never a reveal of the
+      // existing one. Left empty, the password is untouched.
+      password: '',
+      roleId: user.custom_roles?.id ?? '',
+    });
+    setEditOpen(true);
+  }
+
+  async function saveUser(event) {
+    event.preventDefault();
+    setEditError('');
+    setUserNotice('');
+
+    if (editForm.password && editForm.password.length < 8) {
+      setEditError('Password must be at least 8 characters.');
+      return;
+    }
+
+    // Send only what the route should change.
+    const payload = { fullName: editForm.fullName.trim(), roleId: editForm.roleId };
+    if (editForm.password) payload.password = editForm.password;
+
+    setEditBusy(true);
+    try {
+      await authedFetch(`/api/admin/users/${editForm.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(payload),
+      });
+      setUserNotice(
+        `${editForm.email} updated${editForm.password ? ', including their password' : ''}.`
+      );
+      setEditOpen(false);
+      load();
+    } catch (err) {
+      setEditError(err.message);
+    } finally {
+      setEditBusy(false);
     }
   }
 
@@ -280,12 +333,97 @@ export default function AdminClient() {
                       {format(new Date(user.created_at), 'dd MMM yyyy')}
                     </p>
                   </div>
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    aria-label={`Edit ${user.email}`}
+                    onClick={() => openEditUser(user)}
+                  >
+                    <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
+                  </Button>
                 </li>
               ))}
             </ul>
           )}
         </Card>
       </div>
+
+      {/* ------------------------------ edit user ------------------------------ */}
+      <Modal
+        open={editOpen}
+        onClose={() => {
+          if (!editBusy) setEditOpen(false);
+        }}
+        title="Edit staff account"
+        subtitle={editForm.email}
+      >
+        <form onSubmit={saveUser} className="space-y-4">
+          <Field label="Email" htmlFor="edit-email" hint="Email cannot be changed after creation">
+            <Input id="edit-email" value={editForm.email} disabled readOnly />
+          </Field>
+
+          <Field label="Full name" htmlFor="edit-name" hint="Shown in the header and history log">
+            <Input
+              id="edit-name"
+              value={editForm.fullName}
+              onChange={(event) => setEditForm({ ...editForm, fullName: event.target.value })}
+              placeholder="e.g. Riyas"
+            />
+          </Field>
+
+          <Field
+            label="Role"
+            htmlFor="edit-role"
+            hint="The role is the access level — it decides what this account can do"
+          >
+            <Select
+              id="edit-role"
+              required
+              value={editForm.roleId}
+              onChange={(event) => setEditForm({ ...editForm, roleId: event.target.value })}
+            >
+              <option value="">Select a role…</option>
+              {roles.map((role) => (
+                <option key={role.id} value={role.id}>
+                  {role.role_name}
+                </option>
+              ))}
+            </Select>
+          </Field>
+
+          <Field
+            label="New password"
+            htmlFor="edit-password"
+            hint="Leave blank to keep the current password"
+          >
+            <Input
+              id="edit-password"
+              type="text"
+              minLength={8}
+              autoComplete="off"
+              value={editForm.password}
+              onChange={(event) => setEditForm({ ...editForm, password: event.target.value })}
+              placeholder="Unchanged"
+            />
+          </Field>
+
+          {editError && <Alert tone="error">{editError}</Alert>}
+
+          <div className="flex justify-end gap-2">
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => setEditOpen(false)}
+              disabled={editBusy}
+            >
+              Cancel
+            </Button>
+            <Button type="submit" loading={editBusy} disabled={!editForm.roleId}>
+              Save changes
+            </Button>
+          </div>
+        </form>
+      </Modal>
     </div>
   );
 }

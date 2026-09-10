@@ -16,7 +16,10 @@ import {
 import { createClient } from '@/lib/supabase/client';
 import { canCredit } from '@/lib/constants';
 import { compare, nextSort } from '@/lib/table';
+import { isLowStock, lowStockRowClass } from '@/lib/stock';
+import { MIGRATION_HINT, selectItems } from '@/lib/items';
 import Modal from '@/components/Modal';
+import { ToastStack, useToasts } from '@/components/Toast';
 import {
   Alert,
   Badge,
@@ -56,9 +59,10 @@ export default function ViewClient({ roleName }) {
 
   const [rows, setRows] = useState([]);
   const [categories, setCategories] = useState([]);
+  const [alertsSupported, setAlertsSupported] = useState(true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [notice, setNotice] = useState('');
+  const { toasts, pushToast, dismissToast } = useToasts();
 
   const [filters, setFilters] = useState(BLANK_FILTERS);
   const [sort, setSort] = useState({ key: 'display_order', dir: 'asc' });
@@ -80,11 +84,10 @@ export default function ViewClient({ roleName }) {
 
   const load = useCallback(async () => {
     const [itemsRes, categoriesRes] = await Promise.all([
-      supabase
-        .from('items')
-        .select(
-          'id, name, shortcut_code, category_id, size, unit, current_stock, is_important, display_order, categories(name)'
-        ),
+      selectItems(
+        supabase,
+        'id, name, shortcut_code, category_id, size, unit, current_stock, is_important, display_order, categories(name)'
+      ),
       supabase.from('categories').select('id, name').order('name'),
     ]);
 
@@ -92,6 +95,7 @@ export default function ViewClient({ roleName }) {
       setError((itemsRes.error || categoriesRes.error).message);
     } else {
       setError('');
+      setAlertsSupported(itemsRes.alertSizeSupported);
       // Flatten the embedded category so it can be sorted and filtered like
       // any other column.
       setRows(
@@ -123,11 +127,6 @@ export default function ViewClient({ roleName }) {
       supabase.removeChannel(channel);
     };
   }, [supabase, load]);
-
-  function flash(message) {
-    setNotice(message);
-    setTimeout(() => setNotice(''), 3500);
-  }
 
   const units = useMemo(
     () => [...new Set(rows.map((row) => row.unit).filter(Boolean))].sort(),
@@ -196,12 +195,15 @@ export default function ViewClient({ roleName }) {
   async function adjust(item, action) {
     const quantity = Number(qtyFor(item.id));
     if (!Number.isFinite(quantity) || quantity <= 0) {
-      setError('Enter a quantity greater than zero.');
+      pushToast({
+        tone: 'error',
+        title: item.name,
+        description: 'Enter a quantity greater than zero.',
+      });
       return;
     }
 
     setBusyId(item.id);
-    setError('');
 
     const { data, error: rpcError } = await supabase.rpc('adjust_stock', {
       p_item_id: item.id,
@@ -213,7 +215,7 @@ export default function ViewClient({ roleName }) {
     setBusyId(null);
 
     if (rpcError) {
-      setError(rpcError.message);
+      pushToast({ tone: 'error', title: item.name, description: rpcError.message });
       return;
     }
 
@@ -221,9 +223,13 @@ export default function ViewClient({ roleName }) {
     setRows((current) =>
       current.map((row) => (row.id === item.id ? { ...row, current_stock: Number(data) } : row))
     );
-    flash(
-      `${action === 'CREDIT' ? 'Added' : 'Removed'} ${quantity} ${item.unit ?? ''} — ${item.name} now ${Number(data)}.`
-    );
+
+    const credited = action === 'CREDIT';
+    pushToast({
+      tone: credited ? 'credit' : 'debit',
+      title: `${credited ? 'Added' : 'Removed'} ${quantity}${item.unit ? ` ${item.unit}` : ''} · ${item.name}`,
+      description: `Now ${Number(data)}${item.unit ? ` ${item.unit}` : ''} in stock.`,
+    });
   }
 
   async function runBulk(event) {
@@ -254,7 +260,11 @@ export default function ViewClient({ roleName }) {
     setBulkOpen(false);
     setSelected(new Set());
     setBulkNotes('');
-    flash(`${bulkAction === 'CREDIT' ? 'Credited' : 'Debited'} ${data} item(s) by ${quantity}.`);
+    pushToast({
+      tone: bulkAction === 'CREDIT' ? 'credit' : 'debit',
+      title: `${bulkAction === 'CREDIT' ? 'Credited' : 'Debited'} ${data} item${data === 1 ? '' : 's'} by ${quantity}`,
+      description: bulkNotes.trim() || undefined,
+    });
     load();
   }
 
@@ -329,7 +339,7 @@ export default function ViewClient({ roleName }) {
       </div>
 
       {error && <Alert tone="error">{error}</Alert>}
-      {notice && <Alert tone="success">{notice}</Alert>}
+      {!alertsSupported && !error && <Alert tone="info">{MIGRATION_HINT}</Alert>}
 
       {/* Bulk action bar — only present when something is selected. */}
       {selected.size > 0 && (
@@ -506,11 +516,12 @@ export default function ViewClient({ roleName }) {
               {visible.map((item) => {
                 const busy = busyId === item.id;
                 const out = item.current_stock <= 0;
+                const low = isLowStock(item);
 
                 return (
                   <tr
                     key={item.id}
-                    className={selected.has(item.id) ? 'bg-indigo-50/50' : 'hover:bg-slate-50'}
+                    className={lowStockRowClass(item, { selected: selected.has(item.id) })}
                   >
                     <td className="px-3 py-2">
                       <input
@@ -531,6 +542,11 @@ export default function ViewClient({ roleName }) {
                           />
                         )}
                         <span className="font-medium text-slate-900">{item.name}</span>
+                        {low && (
+                          <Badge tone="red" className="shrink-0">
+                            Low
+                          </Badge>
+                        )}
                       </div>
                     </td>
 
@@ -735,6 +751,8 @@ export default function ViewClient({ roleName }) {
           </div>
         )}
       </Modal>
+
+      <ToastStack toasts={toasts} onDismiss={dismissToast} />
     </div>
   );
 }

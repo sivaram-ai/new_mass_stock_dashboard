@@ -58,14 +58,20 @@ create table if not exists items (
     size          varchar(50),
     unit          varchar(50),                -- count | weight | lt | ...
     current_stock numeric default 0,
+    alert_size    integer default 0,        -- low-stock threshold; 0/NULL = off
     is_important  boolean default false,
     display_order integer default 0,
     created_at    timestamp with time zone default timezone('utc'::text, now()) not null
 );
 
+-- Added by migration 0002. Repeated here so a fresh run of this file alone
+-- produces a complete schema; both statements are idempotent.
+alter table items add column if not exists alert_size integer default 0;
+
 create index if not exists items_category_id_idx   on items (category_id);
 create index if not exists items_important_idx     on items (is_important, display_order);
 create index if not exists items_display_order_idx on items (display_order);
+create index if not exists items_alert_size_idx     on items (alert_size) where alert_size > 0;
 
 -- -----------------------------------------------------------------------------
 -- 5. Inventory history (audit log)

@@ -1,5 +1,6 @@
 import { createAdminClient } from '@/lib/supabase/admin';
 import { requireAdmin } from '@/lib/requireAdmin';
+import { validateRoleCreate } from '@/lib/validation';
 
 export const dynamic = 'force-dynamic';
 
@@ -32,21 +33,16 @@ export async function POST(request) {
     return Response.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
 
-  const roleName = typeof body?.roleName === 'string' ? body.roleName.trim() : '';
-  const description =
-    typeof body?.description === 'string' ? body.description.trim() : null;
-
-  if (!roleName) {
-    return Response.json({ error: 'Role name is required' }, { status: 400 });
+  const parsed = validateRoleCreate(body);
+  if (!parsed.ok) {
+    return Response.json({ error: parsed.error }, { status: 400 });
   }
-  if (roleName.length > 50) {
-    return Response.json({ error: 'Role name must be 50 characters or fewer' }, { status: 400 });
-  }
+  const { roleName, description } = parsed.value;
 
   const supabase = createAdminClient();
   const { data, error } = await supabase
     .from('custom_roles')
-    .insert([{ role_name: roleName, description: description || null }])
+    .insert([{ role_name: roleName, description }])
     .select()
     .single();
 

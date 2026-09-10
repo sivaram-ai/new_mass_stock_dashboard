@@ -40,7 +40,13 @@ export async function middleware(request) {
   const { pathname } = request.nextUrl;
   const isPublic = PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(`${p}/`));
 
-  if (!user && !isPublic) {
+  // API routes authenticate themselves — /api/admin/* takes a bearer token,
+  // which this middleware cannot see because it only reads session cookies.
+  // Redirecting them would hand callers a 200 HTML login page instead of the
+  // route's own 401/403 JSON, so let them through and let the route answer.
+  const isApi = pathname.startsWith('/api/');
+
+  if (!user && !isPublic && !isApi) {
     const url = request.nextUrl.clone();
     url.pathname = '/login';
     // Remember where they were headed so login can send them back.

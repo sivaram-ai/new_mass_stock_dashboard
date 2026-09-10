@@ -1,9 +1,8 @@
 import { createAdminClient } from '@/lib/supabase/admin';
 import { requireAdmin } from '@/lib/requireAdmin';
+import { validateUserCreate } from '@/lib/validation';
 
 export const dynamic = 'force-dynamic';
-
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /** GET /api/admin/users — list staff accounts with their roles. Admin only. */
 export async function GET(request) {
@@ -39,20 +38,11 @@ export async function POST(request) {
     return Response.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
 
-  const email = typeof body?.email === 'string' ? body.email.trim().toLowerCase() : '';
-  const password = typeof body?.password === 'string' ? body.password : '';
-  const roleId = typeof body?.roleId === 'string' ? body.roleId.trim() : '';
-  const fullName = typeof body?.fullName === 'string' ? body.fullName.trim() : '';
-
-  if (!email || !password || !roleId) {
-    return Response.json({ error: 'Email, password and role are all required' }, { status: 400 });
+  const parsed = validateUserCreate(body);
+  if (!parsed.ok) {
+    return Response.json({ error: parsed.error }, { status: 400 });
   }
-  if (!EMAIL_RE.test(email)) {
-    return Response.json({ error: 'Enter a valid email address' }, { status: 400 });
-  }
-  if (password.length < 8) {
-    return Response.json({ error: 'Password must be at least 8 characters' }, { status: 400 });
-  }
+  const { email, password, roleId, fullName } = parsed.value;
 
   const supabase = createAdminClient();
 
@@ -88,7 +78,7 @@ export async function POST(request) {
 
   const { error: profileError } = await supabase
     .from('profiles')
-    .insert([{ id: created.user.id, email, full_name: fullName || null, role_id: roleId }]);
+    .insert([{ id: created.user.id, email, full_name: fullName, role_id: roleId }]);
 
   if (profileError) {
     // Compensate — never leave an auth user stranded without a profile, since

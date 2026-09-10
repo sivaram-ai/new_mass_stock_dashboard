@@ -16,6 +16,8 @@ import {
 import { createClient } from '@/lib/supabase/client';
 import { UNITS } from '@/lib/constants';
 import { compare, nextSort } from '@/lib/table';
+import { isLowStock, lowStockRowClass, parseAlertSize } from '@/lib/stock';
+import { MIGRATION_HINT, saveItem, selectItems } from '@/lib/items';
 import Modal from '@/components/Modal';
 import {
   Alert,
@@ -35,6 +37,7 @@ const BLANK_ITEM = {
   category_id: '',
   size: '',
   unit: 'count',
+  alert_size: '',
   is_important: false,
   display_order: 0,
   opening_stock: '',
@@ -58,6 +61,7 @@ const ITEM_COLUMNS = [
   { key: 'category_name', label: 'Category', align: 'left' },
   { key: 'size', label: 'Size', align: 'left' },
   { key: 'unit', label: 'Unit', align: 'left' },
+  { key: 'alert_size', label: 'Alert at', align: 'right' },
   { key: 'current_stock', label: 'Stock', align: 'right' },
 ];
 
@@ -69,6 +73,7 @@ export default function ConfigClient() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [alertsSupported, setAlertsSupported] = useState(true);
 
   const [newCategory, setNewCategory] = useState('');
   const [savingCategory, setSavingCategory] = useState(false);
@@ -88,18 +93,18 @@ export default function ConfigClient() {
     setError('');
     const [categoriesRes, itemsRes] = await Promise.all([
       supabase.from('categories').select('id, name').order('name'),
-      supabase
-        .from('items')
-        .select(
-          'id, name, shortcut_code, category_id, size, unit, current_stock, is_important, display_order, categories(name)'
-        )
-        .order('display_order', { ascending: true })
-        .order('name', { ascending: true }),
+      selectItems(
+        supabase,
+        'id, name, shortcut_code, category_id, size, unit, current_stock, is_important, display_order, categories(name)',
+        (query) =>
+          query.order('display_order', { ascending: true }).order('name', { ascending: true })
+      ),
     ]);
 
     if (categoriesRes.error || itemsRes.error) {
       setError((categoriesRes.error || itemsRes.error).message);
     } else {
+      setAlertsSupported(itemsRes.alertSizeSupported);
       setCategories(categoriesRes.data ?? []);
       // Flatten the embedded category so it sorts and filters like any other
       // column, and coerce stock to a number so it sorts numerically.
@@ -169,6 +174,7 @@ export default function ConfigClient() {
       if (filters.important === 'no' && row.is_important) return false;
       if (filters.stock === 'in' && row.current_stock <= 0) return false;
       if (filters.stock === 'out' && row.current_stock > 0) return false;
+      if (filters.stock === 'low' && !isLowStock(row)) return false;
       return true;
     });
 
@@ -270,6 +276,7 @@ export default function ConfigClient() {
       category_id: item.category_id ?? '',
       size: item.size ?? '',
       unit: item.unit ?? 'count',
+      alert_size: item.alert_size == null ? '' : String(item.alert_size),
       is_important: Boolean(item.is_important),
       display_order: item.display_order ?? 0,
       opening_stock: '',
@@ -287,42 +294,58 @@ export default function ConfigClient() {
       return;
     }
 
+    const alert = parseAlertSize(itemForm.alert_size);
+    if (!alert.ok) {
+      setFormError(alert.error);
+      return;
+    }
+
     const payload = {
       name,
       shortcut_code: itemForm.shortcut_code.trim() || null,
       category_id: itemForm.category_id || null,
       size: itemForm.size.trim() || null,
       unit: itemForm.unit || null,
+      alert_size: alert.value,
       is_important: itemForm.is_important,
       display_order: Number(itemForm.display_order) || 0,
     };
 
     setSavingItem(true);
 
+    // saveItem() drops alert_size and retries if the database has not run
+    // migration 0002 yet, so the rest of the form still saves.
     if (editingItemId) {
-      const { error: updateError } = await supabase
-        .from('items')
-        .update(payload)
-        .eq('id', editingItemId);
+      const { error: updateError, alertSizeSupported } = await saveItem(
+        supabase,
+        payload,
+        editingItemId
+      );
       setSavingItem(false);
 
       if (updateError) {
         setFormError(friendlyItemError(updateError));
         return;
       }
-      flash(`"${name}" updated.`);
+      setAlertsSupported(alertSizeSupported);
+      flash(
+        alertSizeSupported
+          ? `"${name}" updated.`
+          : `"${name}" updated, but the alert size was not saved. ${MIGRATION_HINT}`
+      );
     } else {
-      const { data: created, error: insertError } = await supabase
-        .from('items')
-        .insert([payload])
-        .select('id')
-        .single();
+      const {
+        data: created,
+        error: insertError,
+        alertSizeSupported,
+      } = await saveItem(supabase, payload);
 
       if (insertError) {
         setSavingItem(false);
         setFormError(friendlyItemError(insertError));
         return;
       }
+      setAlertsSupported(alertSizeSupported);
 
       // An opening balance is a stock movement, so it goes through the RPC and
       // lands in the audit log as INITIAL rather than being written directly.
@@ -343,7 +366,11 @@ export default function ConfigClient() {
       }
 
       setSavingItem(false);
-      flash(`"${name}" created.`);
+      flash(
+        alertSizeSupported
+          ? `"${name}" created.`
+          : `"${name}" created, but the alert size was not saved. ${MIGRATION_HINT}`
+      );
     }
 
     setItemModalOpen(false);
@@ -419,6 +446,7 @@ export default function ConfigClient() {
 
       {error && <Alert tone="error">{error}</Alert>}
       {notice && <Alert tone="success">{notice}</Alert>}
+      {!alertsSupported && !error && <Alert tone="info">{MIGRATION_HINT}</Alert>}
 
       <div className="grid gap-6 lg:grid-cols-3">
         {/* ------------------------------ categories ------------------------------ */}
@@ -537,7 +565,7 @@ export default function ConfigClient() {
           </div>
 
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[820px] text-sm">
+            <table className="w-full min-w-[900px] text-sm">
               <thead className="bg-slate-50 text-left text-xs text-slate-500">
                 <tr className="border-b border-slate-200">
                   {ITEM_COLUMNS.map((column) => {
@@ -639,6 +667,7 @@ export default function ConfigClient() {
                       ))}
                     </Select>
                   </td>
+                  <td className="px-4 py-2" />
                   <td className="px-4 py-2">
                     <Select
                       value={filters.stock}
@@ -649,6 +678,7 @@ export default function ConfigClient() {
                       <option value="">All</option>
                       <option value="in">In stock</option>
                       <option value="out">Out of stock</option>
+                      <option value="low">Low stock</option>
                     </Select>
                   </td>
                   <td className="px-4 py-2" />
@@ -657,7 +687,7 @@ export default function ConfigClient() {
 
               <tbody className="divide-y divide-slate-100">
                 {visibleItems.map((item) => (
-                  <tr key={item.id} className="hover:bg-slate-50">
+                  <tr key={item.id} className={lowStockRowClass(item)}>
                     <td className="tnum px-4 py-2.5 text-right text-slate-400">
                       {item.display_order}
                     </td>
@@ -670,6 +700,11 @@ export default function ConfigClient() {
                           />
                         )}
                         <span className="font-medium text-slate-900">{item.name}</span>
+                        {isLowStock(item) && (
+                          <Badge tone="red" className="shrink-0">
+                            Low
+                          </Badge>
+                        )}
                       </div>
                     </td>
                     <td className="px-4 py-2.5 text-slate-500">{item.shortcut_code || '—'}</td>
@@ -678,6 +713,9 @@ export default function ConfigClient() {
                     </td>
                     <td className="px-4 py-2.5 text-slate-600">{item.size || '—'}</td>
                     <td className="px-4 py-2.5 text-slate-600">{item.unit || '—'}</td>
+                    <td className="tnum px-4 py-2.5 text-right text-slate-400">
+                      {item.alert_size ? item.alert_size : '—'}
+                    </td>
                     <td className="tnum px-4 py-2.5 text-right font-medium text-slate-900">
                       {item.current_stock}
                     </td>
@@ -789,6 +827,24 @@ export default function ConfigClient() {
                   </option>
                 ))}
               </Select>
+            </Field>
+
+            <Field
+              label="Alert size"
+              htmlFor="item-alert"
+              hint="Highlight when stock falls to this or below. Blank or 0 = no alert."
+            >
+              <Input
+                id="item-alert"
+                type="number"
+                step="1"
+                min="0"
+                value={itemForm.alert_size}
+                onChange={(event) =>
+                  setItemForm({ ...itemForm, alert_size: event.target.value })
+                }
+                placeholder="No alert"
+              />
             </Field>
 
             <Field

@@ -3,22 +3,25 @@ import { formatDistanceToNow } from 'date-fns';
 import { AlertTriangle, Boxes, FolderOpen, Star, TrendingDown, TrendingUp } from 'lucide-react';
 import { requireUser } from '@/lib/auth';
 import { createClient } from '@/lib/supabase/server';
+import { isLowStock } from '@/lib/stock';
+import { MIGRATION_HINT, selectItems } from '@/lib/items';
 import { Alert, Badge, Card, EmptyState } from '@/components/ui';
 
 export const metadata = { title: 'Dashboard · New Mass Stock' };
 export const dynamic = 'force-dynamic';
 
-function StockPill({ value, unit }) {
-  const out = Number(value) <= 0;
+function StockPill({ item }) {
+  const value = Number(item.current_stock ?? 0);
+  const alarming = value <= 0 || isLowStock(item);
   return (
     <span
       className={[
         'tnum shrink-0 rounded-md px-2 py-1 text-sm font-semibold',
-        out ? 'bg-red-50 text-red-700' : 'bg-emerald-50 text-emerald-700',
+        alarming ? 'bg-red-100 text-red-700' : 'bg-emerald-50 text-emerald-700',
       ].join(' ')}
     >
-      {Number(value ?? 0)}
-      {unit ? <span className="ml-1 text-xs font-normal opacity-70">{unit}</span> : null}
+      {value}
+      {item.unit ? <span className="ml-1 text-xs font-normal opacity-70">{item.unit}</span> : null}
     </span>
   );
 }
@@ -49,13 +52,12 @@ export default async function DashboardPage({ searchParams }) {
   const supabase = await createClient();
 
   const [itemsRes, categoriesRes, activityRes] = await Promise.all([
-    supabase
-      .from('items')
-      .select(
-        'id, name, shortcut_code, size, unit, current_stock, is_important, display_order, category_id'
-      )
-      .order('display_order', { ascending: true })
-      .order('name', { ascending: true }),
+    selectItems(
+      supabase,
+      'id, name, shortcut_code, size, unit, current_stock, is_important, display_order, category_id',
+      (query) =>
+        query.order('display_order', { ascending: true }).order('name', { ascending: true })
+    ),
     supabase.from('categories').select('id, name').order('name'),
     supabase
       .from('inventory_history_view')
@@ -71,16 +73,23 @@ export default async function DashboardPage({ searchParams }) {
 
   const important = items.filter((item) => item.is_important);
   const outOfStock = items.filter((item) => Number(item.current_stock) <= 0);
+  const lowStock = items.filter((item) => isLowStock(item) || Number(item.current_stock) <= 0);
   const uncategorised = items.filter((item) => !item.category_id);
+
+  // Lowest stock first, so whatever needs reordering is what you see without
+  // scrolling; ties fall back to name for a stable, predictable order.
+  const byLowestStock = (a, b) =>
+    Number(a.current_stock ?? 0) - Number(b.current_stock ?? 0) ||
+    String(a.name).localeCompare(String(b.name));
 
   const groups = [
     ...categories.map((category) => ({
       key: category.id,
       name: category.name,
-      members: items.filter((item) => item.category_id === category.id),
+      members: items.filter((item) => item.category_id === category.id).sort(byLowestStock),
     })),
     ...(uncategorised.length
-      ? [{ key: 'none', name: 'Uncategorised', members: uncategorised }]
+      ? [{ key: 'none', name: 'Uncategorised', members: [...uncategorised].sort(byLowestStock) }]
       : []),
   ];
 
@@ -106,6 +115,10 @@ export default async function DashboardPage({ searchParams }) {
         </Alert>
       )}
 
+      {!itemsRes.alertSizeSupported && !loadError && (
+        <Alert tone="info">{MIGRATION_HINT}</Alert>
+      )}
+
       {!user.roleName && (
         <Alert tone="error">
           Your account has no role assigned, so most actions are blocked. Ask an administrator to
@@ -119,9 +132,9 @@ export default async function DashboardPage({ searchParams }) {
         <Stat icon={FolderOpen} label="Categories" value={categories.length} />
         <Stat
           icon={AlertTriangle}
-          label="Out of stock"
-          value={outOfStock.length}
-          tone={outOfStock.length ? 'red' : 'slate'}
+          label={`Low / out of stock${outOfStock.length ? ` (${outOfStock.length} out)` : ''}`}
+          value={lowStock.length}
+          tone={lowStock.length ? 'red' : 'slate'}
         />
       </div>
 
@@ -144,14 +157,19 @@ export default async function DashboardPage({ searchParams }) {
         ) : (
           <ul className="grid gap-px bg-slate-200 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {important.map((item) => (
-              <li key={item.id} className="flex items-center justify-between gap-3 bg-white p-4">
+              <li
+                key={item.id}
+                className={`flex items-center justify-between gap-3 p-4 ${
+                  isLowStock(item) || Number(item.current_stock) <= 0 ? 'bg-red-50' : 'bg-white'
+                }`}
+              >
                 <div className="min-w-0">
                   <p className="truncate text-sm font-medium text-slate-900">{item.name}</p>
                   <p className="truncate text-xs text-slate-500">
                     {[item.shortcut_code, item.size].filter(Boolean).join(' · ') || '—'}
                   </p>
                 </div>
-                <StockPill value={item.current_stock} unit={item.unit} />
+                <StockPill item={item} />
               </li>
             ))}
           </ul>
@@ -174,14 +192,14 @@ export default async function DashboardPage({ searchParams }) {
             <div className="grid gap-px bg-slate-200 sm:grid-cols-2">
               {groups.map((group) => {
                 const empty = group.members.filter(
-                  (item) => Number(item.current_stock) <= 0
+                  (item) => isLowStock(item) || Number(item.current_stock) <= 0
                 ).length;
                 return (
                   <section key={group.key} className="bg-white p-4">
                     <div className="mb-2 flex items-center justify-between gap-2">
                       <h3 className="truncate text-sm font-medium text-slate-900">{group.name}</h3>
                       <div className="flex shrink-0 items-center gap-1.5">
-                        {empty > 0 && <Badge tone="red">{empty} out</Badge>}
+                        {empty > 0 && <Badge tone="red">{empty} low</Badge>}
                         <Badge>{group.members.length} items</Badge>
                       </div>
                     </div>
@@ -189,30 +207,34 @@ export default async function DashboardPage({ searchParams }) {
                     {group.members.length === 0 ? (
                       <p className="text-xs text-slate-400">No items in this category.</p>
                     ) : (
-                      <ul className="divide-y divide-slate-100">
-                        {group.members.slice(0, 6).map((item) => (
-                          <li
-                            key={item.id}
-                            className="flex items-center justify-between gap-2 py-1.5"
-                          >
-                            <span className="truncate text-xs text-slate-600">{item.name}</span>
-                            <span
-                              className={[
-                                'tnum shrink-0 text-xs font-semibold',
-                                Number(item.current_stock) <= 0 ? 'text-red-600' : 'text-slate-700',
-                              ].join(' ')}
+                      /*
+                       * Every item is listed — no truncation, no "+N more". The
+                       * fixed max height keeps a large category from stretching
+                       * the page; overflow scrolls within the card instead.
+                       */
+                      <ul className="max-h-56 divide-y divide-slate-100 overflow-y-auto pr-1">
+                        {group.members.map((item) => {
+                          const low = isLowStock(item) || Number(item.current_stock) <= 0;
+                          return (
+                            <li
+                              key={item.id}
+                              className={`flex items-center justify-between gap-2 px-1.5 py-1.5 ${
+                                low ? 'bg-red-50' : ''
+                              }`}
                             >
-                              {Number(item.current_stock ?? 0)} {item.unit ?? ''}
-                            </span>
-                          </li>
-                        ))}
+                              <span className="truncate text-xs text-slate-600">{item.name}</span>
+                              <span
+                                className={[
+                                  'tnum shrink-0 text-xs font-semibold',
+                                  low ? 'text-red-600' : 'text-slate-700',
+                                ].join(' ')}
+                              >
+                                {Number(item.current_stock ?? 0)} {item.unit ?? ''}
+                              </span>
+                            </li>
+                          );
+                        })}
                       </ul>
-                    )}
-
-                    {group.members.length > 6 && (
-                      <p className="pt-2 text-xs text-slate-400">
-                        +{group.members.length - 6} more
-                      </p>
                     )}
                   </section>
                 );
