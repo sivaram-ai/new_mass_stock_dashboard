@@ -17,7 +17,7 @@ import { createClient } from '@/lib/supabase/client';
 import { UNITS } from '@/lib/constants';
 import { compare, nextSort } from '@/lib/table';
 import { isLowStock, lowStockRowClass, parseAlertSize } from '@/lib/stock';
-import { MIGRATION_HINT, saveItem, selectItems } from '@/lib/items';
+import { MIGRATION_HINT, saveItem as persistItem, selectItems } from '@/lib/items';
 import Modal from '@/components/Modal';
 import {
   Alert,
@@ -313,10 +313,10 @@ export default function ConfigClient() {
 
     setSavingItem(true);
 
-    // saveItem() drops alert_size and retries if the database has not run
+    // persistItem() drops alert_size and retries if the database has not run
     // migration 0002 yet, so the rest of the form still saves.
     if (editingItemId) {
-      const { error: updateError, alertSizeSupported } = await saveItem(
+      const { error: updateError, alertSizeSupported } = await persistItem(
         supabase,
         payload,
         editingItemId
@@ -338,7 +338,7 @@ export default function ConfigClient() {
         data: created,
         error: insertError,
         alertSizeSupported,
-      } = await saveItem(supabase, payload);
+      } = await persistItem(supabase, payload);
 
       if (insertError) {
         setSavingItem(false);
