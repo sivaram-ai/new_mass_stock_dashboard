@@ -29,8 +29,9 @@ Permissions are enforced in the database (Row Level Security + a `SECURITY DEFIN
 11. [API reference](#11-api-reference)
 12. [Database migrations](#12-database-migrations)
 13. [Automated tests](#13-automated-tests)
-14. [Troubleshooting](#14-troubleshooting)
-15. [Notes on this build](#15-notes-on-this-build)
+14. [Navigation performance](#14-navigation-performance)
+15. [Troubleshooting](#15-troubleshooting)
+16. [Notes on this build](#16-notes-on-this-build)
 
 ---
 
@@ -241,6 +242,12 @@ Work through this in order — each step sets up the next.
 35. Try a password under 8 characters → rejected with a clear message.
 36. Try changing **your own** role → refused: "You cannot change your own role."
 
+**Navigation**
+
+37. Click between Dashboard, View Items, Item Config, History and Admin. A skeleton appears immediately on each click.
+38. No page shows a full-page spinner after it has already rendered — the data is there when the page is.
+39. On History, page forward and re-sort: the "of N movements" total stays correct without being recounted. Apply a filter and it updates; clear it and it returns.
+
 ### Build check
 
 Before deploying, confirm the build, the linter and the tests all pass:
@@ -364,10 +371,11 @@ app/
   items/view/               Sortable/filterable table, inline +/−, bulk, history
   history/                  Master audit log with filters, sorting, paging
   admin/                    Create roles and staff accounts (Admin only)
+  */loading.js              Skeletons shown while a route renders
   api/admin/roles/          POST create role · GET list roles
   api/admin/users/          POST create user · GET list users
   api/admin/users/[id]/     PATCH update name, role or password
-components/                 Topbar, Modal, Toast, shared UI primitives
+components/                 Topbar, Modal, Toast, Skeleton, UI primitives
 lib/
   supabase/client.js        Browser client
   supabase/server.js        Server-component client
@@ -378,6 +386,9 @@ lib/
   stock.js                  Low-stock rule shared by every screen
   table.js                  Sort comparator shared by the tables
   validation.js             Payload rules shared by the admin routes
+  items.js                  Item columns + alert_size fallback, server & client
+  history.js                History query builder, server & client
+  adminData.js              Role/user queries, shared by page and API routes
 middleware.js               Refreshes the session, redirects signed-out users
 scripts/seed-admin.mjs      Creates the first Admin account
 supabase/migrations/        SQL schema, RLS policies, RPCs and upgrades
@@ -610,7 +621,120 @@ React components and end-to-end flows are not covered by automated tests; they a
 
 ---
 
-## 14. Troubleshooting
+## 14. Navigation performance
+
+Moving between pages used to take roughly a second, with a spinner appearing *after* the page had already rendered. Below is what caused it, what changed, and the measurements.
+
+### Measured results
+
+Production build (`next build` + `next start`), same machine, same Supabase project, median of 7 runs. This project's Supabase region is ~150ms away, so every avoidable round trip was expensive.
+
+**Server render time per navigation** (the RSC payload Next fetches on every soft navigation):
+
+| Route | Before | After | Change |
+| --- | ---: | ---: | ---: |
+| `/dashboard` | 741 ms | 274 ms | **−63%** |
+| `/items/config` | 545 ms | 219 ms | **−60%** |
+| `/history` | 581 ms | 242 ms | **−58%** |
+| `/items/view` | 553 ms | 231 ms | **−58%** |
+| `/admin` | 525 ms | 400 ms | −24% |
+
+**Click to data on screen** (nav link clicked → the page's real rows visible, not a spinner):
+
+| Page | Before | After | Change |
+| --- | ---: | ---: | ---: |
+| Admin | 1610 ms | 486 ms | **−70%** |
+| Item Config | 1149 ms | 416 ms | **−64%** |
+| View Items | 1105 ms | 362 ms | **−67%** |
+| Dashboard | 831 ms | 406 ms | **−51%** |
+| History | 793 ms | 399 ms | **−50%** |
+
+`/admin` improves least by design — see [Why /admin is different](#why-admin-is-different).
+
+### What was actually slow
+
+Timing instrumentation on the request path found four compounding problems, not one.
+
+**1. The auth server was called on every request, three times over.**
+
+`supabase.auth.getUser()` makes a network call to Supabase Auth. It ran in `middleware.js` (measured **250–480ms**), again in the root layout, and a third time in each page's `requireUser()`. Two profile queries followed. A page that did nothing but check auth — `/history`, `/items/view` — still cost ~500ms before touching its own data.
+
+**2. `getCurrentUser()` ran twice per navigation, and the copies fought each other.**
+
+The root layout needs the user for the header; every page needs it for its access check. Neither knew about the other. Instrumentation showed the pair running concurrently and contending: **498ms each**, against ~60ms when only one ran.
+
+**3. Four pages fetched their data only after hydrating.**
+
+View Items, Item Config, History and Admin rendered an empty shell, shipped it, hydrated, *then* queried Supabase from the browser. That put a full-page spinner on screen for **250–400ms after the page had already appeared** — measured as the gap between "route changed" (~300ms) and "data visible" (~700ms).
+
+**4. Auth blocked data fetching that could have run alongside it.**
+
+`await requireUser()` completed before a page started its own queries, so two ~170ms round trips ran end to end instead of at once.
+
+### What changed
+
+**Verify the JWT locally instead of asking the auth server.** This project signs tokens with **ES256**, so `supabase.auth.getClaims()` verifies the signature with WebCrypto against a cached JWKS — no network call. It still goes through `getSession()` first, so an expired token is refreshed and the new cookie written exactly as before; the refresh now happens when the token actually expires rather than on every page view. Applied in `middleware.js` and `lib/auth.js`.
+
+> **Tradeoff:** a session revoked mid-token stays valid locally until the access token expires, instead of being caught on the next request. Access tokens are short-lived, and every write is still re-checked by RLS in the database, so this does not widen what a revoked session can do. If you need instant revocation more than you need the latency, swap `getClaims()` back to `getUser()` in those two files — nothing else depends on the choice.
+
+**Deduplicate the user lookup per request.** `getCurrentUser()` is wrapped in React's `cache()`, so the layout and the page share one result. Halves both the auth work and the profile queries, and removes the self-contention entirely.
+
+**Render initial data on the server.** Each page now fetches its own first screen and passes it in as props; the client seeds `useState` from those props. The full-page spinners are gone from View Items, Item Config, History and Admin — data arrives *with* the page. Every client still refetches after its own mutations, and View Items keeps its realtime subscription, so nothing about freshness changed.
+
+**Run the auth check alongside the data, not in front of it.** Pages now `Promise.all([requireUser(), ...queries])`. Safe because those queries use the caller's own RLS-scoped client: a request without a valid session reads nothing regardless, and `requireUser()` still redirects before anything renders.
+
+**Added `loading.js` to every route.** A skeleton appears the instant a link is clicked instead of the old page sitting there unchanged. These are static server components, so they ship no JavaScript. They also give `<Link>` a boundary to prefetch dynamic routes up to.
+
+**Count the history table only when the filters change.** `count: 'exact'` makes PostgREST run a second COUNT over the whole filtered set. The total only changes when filters change, so paging and re-sorting now reuse the count already held (`lib/history.js`).
+
+**Shared query modules.** `lib/items.js`, `lib/history.js` and `lib/adminData.js` hold the queries the server pre-render and the client refetch both use, so the two cannot drift into returning differently shaped rows.
+
+### Why /admin is different
+
+Every other page overlaps its auth check with its data fetch. `/admin` cannot: it reads through the **service-role client, which bypasses RLS**, so `requireRole([ROLE_ADMIN])` must finish first. That ordering is a security requirement, not an oversight, and it keeps ~150ms in the path. It still improved 70% on click-to-data because the client-side fetch waterfall is gone.
+
+### Scale testing
+
+Verified against **20,617 history rows** (20,000 synthetic rows inserted with `quantity_changed = 0` so the stock/history invariant held, then removed — row count and invariant confirmed restored afterwards):
+
+| Measure | 617 rows | 20,617 rows |
+| --- | ---: | ---: |
+| `/history` server render | 242 ms | 323 ms |
+| Paging to the next page | — | 228–376 ms |
+
+Paging stays flat because the query is `LIMIT 50` against `inventory_history_created_at_idx`, and the total is no longer recounted.
+
+**An honest note on the count optimization:** at 20k rows, dropping the exact count saved nothing measurable — the ~150ms network round trip dominates, and Postgres counts 20k rows in well under a millisecond. It is a real reduction in database work that will matter at much larger volumes or with expensive filters, but it is not why navigation got faster today.
+
+### What was deliberately not done
+
+**Client-side router caching (`staleTimes`).** Next can keep dynamic pages in the client router cache so returning to one is instant. Not enabled: it would serve stock numbers from a snapshot up to N seconds old, and this app's whole purpose is showing what stock is *right now*. Correctness beat the extra milliseconds.
+
+**Putting the role in the JWT.** A custom access-token hook could carry `role_name` in the token and remove the remaining profile query (~150ms). Skipped because it needs Supabase dashboard configuration outside this repo and would make role changes take effect only on the next token refresh, breaking the "role updates apply immediately" behaviour.
+
+### Verifying it yourself
+
+```bash
+npm run build
+```
+
+```bash
+npm start
+```
+
+Then in the browser console, timing the payload every soft navigation fetches:
+
+```js
+const t0 = performance.now();
+await (await fetch('/items/view', { headers: { RSC: '1' }, cache: 'no-store' })).text();
+performance.now() - t0;
+```
+
+`npm run dev` is substantially slower than production — it compiles routes on demand and does not prefetch — so measure against a production build.
+
+---
+
+## 15. Troubleshooting
 
 **`Could not find the table 'public.items'`**
 The migration has not been run. See [Supabase setup](#3-supabase-setup).
@@ -628,7 +752,7 @@ It needs administrator rights. Re-run it in an elevated PowerShell.
 The auth user exists without a matching `profiles` row. Re-run `npm run seed:admin` for the Admin, or recreate the user from `/admin`.
 
 **`Missing bearer token` from `/api/admin/*`**
-These endpoints require a signed-in Admin's access token. That is deliberate — see [Notes](#15-notes-on-this-build).
+These endpoints require a signed-in Admin's access token. That is deliberate — see [Notes](#16-notes-on-this-build).
 
 **Banner: "Low stock alerts are inactive until … 0002_add_alert_size.sql is run"**
 Exactly what it says — the app is working, but the low-stock column is missing. Apply `supabase/migrations/0002_add_alert_size.sql` in the SQL Editor and the banner disappears on the next page load. See [Database migrations](#12-database-migrations).
@@ -647,7 +771,7 @@ They come from PostCSS bundled inside Next 15 and only affect build-time CSS pro
 
 ---
 
-## 15. Notes on this build
+## 16. Notes on this build
 
 A few things differ from the original specification. Each was a deliberate call:
 

@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import {
   ArrowDown,
   ArrowUp,
@@ -17,7 +17,13 @@ import { createClient } from '@/lib/supabase/client';
 import { UNITS } from '@/lib/constants';
 import { compare, nextSort } from '@/lib/table';
 import { isLowStock, lowStockRowClass, parseAlertSize } from '@/lib/stock';
-import { MIGRATION_HINT, saveItem as persistItem, selectItems } from '@/lib/items';
+import {
+  ITEM_LIST_COLUMNS,
+  MIGRATION_HINT,
+  normaliseItemRow,
+  saveItem as persistItem,
+  selectItems,
+} from '@/lib/items';
 import Modal from '@/components/Modal';
 import {
   Alert,
@@ -28,7 +34,6 @@ import {
   Field,
   Input,
   Select,
-  Spinner,
 } from '@/components/ui';
 
 const BLANK_ITEM = {
@@ -65,15 +70,21 @@ const ITEM_COLUMNS = [
   { key: 'current_stock', label: 'Stock', align: 'right' },
 ];
 
-export default function ConfigClient() {
+export default function ConfigClient({
+  initialCategories = [],
+  initialItems = [],
+  initialAlertsSupported = true,
+  initialError = '',
+}) {
   const supabase = createClient();
 
-  const [categories, setCategories] = useState([]);
-  const [items, setItems] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
+  // Seeded from the server render — the catalogue is on screen with the page,
+  // with no spinner. load() still refreshes after every create/edit/delete.
+  const [categories, setCategories] = useState(initialCategories);
+  const [items, setItems] = useState(() => initialItems.map(normaliseItemRow));
+  const [error, setError] = useState(initialError);
   const [notice, setNotice] = useState('');
-  const [alertsSupported, setAlertsSupported] = useState(true);
+  const [alertsSupported, setAlertsSupported] = useState(initialAlertsSupported);
 
   const [newCategory, setNewCategory] = useState('');
   const [savingCategory, setSavingCategory] = useState(false);
@@ -93,11 +104,8 @@ export default function ConfigClient() {
     setError('');
     const [categoriesRes, itemsRes] = await Promise.all([
       supabase.from('categories').select('id, name').order('name'),
-      selectItems(
-        supabase,
-        'id, name, shortcut_code, category_id, size, unit, current_stock, is_important, display_order, categories(name)',
-        (query) =>
-          query.order('display_order', { ascending: true }).order('name', { ascending: true })
+      selectItems(supabase, ITEM_LIST_COLUMNS, (query) =>
+        query.order('display_order', { ascending: true }).order('name', { ascending: true })
       ),
     ]);
 
@@ -106,22 +114,9 @@ export default function ConfigClient() {
     } else {
       setAlertsSupported(itemsRes.alertSizeSupported);
       setCategories(categoriesRes.data ?? []);
-      // Flatten the embedded category so it sorts and filters like any other
-      // column, and coerce stock to a number so it sorts numerically.
-      setItems(
-        (itemsRes.data ?? []).map((row) => ({
-          ...row,
-          current_stock: Number(row.current_stock ?? 0),
-          category_name: row.categories?.name ?? '',
-        }))
-      );
+      setItems((itemsRes.data ?? []).map(normaliseItemRow));
     }
-    setLoading(false);
   }, [supabase]);
-
-  useEffect(() => {
-    load();
-  }, [load]);
 
   const categoryName = useMemo(() => {
     const map = new Map(categories.map((category) => [category.id, category.name]));
@@ -400,8 +395,6 @@ export default function ConfigClient() {
     if (err.code === '42501') return 'Your role is not allowed to change the catalogue.';
     return err.message;
   }
-
-  if (loading) return <Spinner label="Loading catalogue" />;
 
   return (
     <div className="space-y-6">

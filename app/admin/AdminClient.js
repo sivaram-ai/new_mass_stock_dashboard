@@ -1,23 +1,28 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { format } from 'date-fns';
 import { Pencil, ShieldCheck, UserPlus, Users } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 import Modal from '@/components/Modal';
-import { Alert, Badge, Button, Card, EmptyState, Field, Input, Select, Spinner } from '@/components/ui';
+import { Alert, Badge, Button, Card, EmptyState, Field, Input, Select } from '@/components/ui';
 
 const BLANK_USER = { fullName: '', email: '', password: '', roleId: '' };
 const BLANK_ROLE = { roleName: '', description: '' };
 const BLANK_EDIT = { id: '', email: '', fullName: '', password: '', roleId: '' };
 
-export default function AdminClient() {
+export default function AdminClient({
+  initialRoles = [],
+  initialUsers = [],
+  initialError = '',
+}) {
   const supabase = createClient();
 
-  const [roles, setRoles] = useState([]);
-  const [users, setUsers] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState('');
+  // Seeded from the server render, so the panel is populated on first paint
+  // instead of showing a full-page spinner while two API calls complete.
+  const [roles, setRoles] = useState(initialRoles);
+  const [users, setUsers] = useState(initialUsers);
+  const [loadError, setLoadError] = useState(initialError);
 
   const [roleForm, setRoleForm] = useState(BLANK_ROLE);
   const [roleBusy, setRoleBusy] = useState(false);
@@ -60,6 +65,7 @@ export default function AdminClient() {
     [supabase]
   );
 
+  // Called after every create/edit so the lists reflect the change.
   const load = useCallback(async () => {
     try {
       const [rolesRes, usersRes] = await Promise.all([
@@ -71,14 +77,8 @@ export default function AdminClient() {
       setLoadError('');
     } catch (err) {
       setLoadError(err.message);
-    } finally {
-      setLoading(false);
     }
   }, [authedFetch]);
-
-  useEffect(() => {
-    load();
-  }, [load]);
 
   async function createRole(event) {
     event.preventDefault();
@@ -180,8 +180,6 @@ export default function AdminClient() {
       setEditBusy(false);
     }
   }
-
-  if (loading) return <Spinner label="Loading admin panel" />;
 
   return (
     <div className="space-y-6">

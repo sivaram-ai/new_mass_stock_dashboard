@@ -47,11 +47,13 @@ function Stat({ icon: Icon, label, value, tone = 'slate' }) {
 }
 
 export default async function DashboardPage({ searchParams }) {
-  const user = await requireUser();
   const params = await searchParams;
   const supabase = await createClient();
 
-  const [itemsRes, categoriesRes, activityRes] = await Promise.all([
+  // Auth resolves alongside the data rather than in front of it; every query
+  // below is RLS-scoped to the caller, so nothing leaks if the session is bad.
+  const [user, itemsRes, categoriesRes, activityRes] = await Promise.all([
+    requireUser(),
     selectItems(
       supabase,
       'id, name, shortcut_code, size, unit, current_stock, is_important, display_order, category_id',

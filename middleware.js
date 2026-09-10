@@ -30,12 +30,19 @@ export async function middleware(request) {
     }
   );
 
-  // Do not insert logic between createServerClient and getUser(): getUser()
-  // is what actually refreshes the token, and skipping it at random makes
-  // sessions expire unpredictably.
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  // Do not insert logic between createServerClient and this call: it is what
+  // refreshes the token, and skipping it at random makes sessions expire
+  // unpredictably.
+  //
+  // getClaims() rather than getUser(): this project signs JWTs with ES256, so
+  // the signature is verified locally against a cached JWKS instead of calling
+  // the Supabase auth server. That call was the single most expensive thing in
+  // the request path — 250-480ms on every navigation, including static-asset
+  // requests that matched this middleware. getClaims() still goes through
+  // getSession() first, so an expired token is refreshed and the new cookie
+  // written through setAll() below exactly as before.
+  const { data: claimsData } = await supabase.auth.getClaims();
+  const user = claimsData?.claims ?? null;
 
   const { pathname } = request.nextUrl;
   const isPublic = PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(`${p}/`));

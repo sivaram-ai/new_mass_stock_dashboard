@@ -1,6 +1,7 @@
 import { createAdminClient } from '@/lib/supabase/admin';
 import { requireAdmin } from '@/lib/requireAdmin';
 import { validateUserCreate } from '@/lib/validation';
+import { listUsers } from '@/lib/adminData';
 
 export const dynamic = 'force-dynamic';
 
@@ -12,10 +13,7 @@ export async function GET(request) {
   }
 
   const supabase = createAdminClient();
-  const { data, error } = await supabase
-    .from('profiles')
-    .select('id, email, full_name, created_at, custom_roles(id, role_name)')
-    .order('created_at', { ascending: false });
+  const { data, error } = await listUsers(supabase);
 
   if (error) {
     console.error('users list failed', error);

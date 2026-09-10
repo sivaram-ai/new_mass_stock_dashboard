@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { format } from 'date-fns';
 import {
   ArrowDown,
@@ -13,18 +13,14 @@ import {
 } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 import { ACTION_TYPES } from '@/lib/constants';
+import {
+  BLANK_HISTORY_FILTERS,
+  DEFAULT_HISTORY_SORT,
+  HISTORY_PAGE_SIZE,
+  buildHistoryQuery,
+  historyCountKey,
+} from '@/lib/history';
 import { Alert, Badge, Button, Card, EmptyState, Input, Select, Spinner } from '@/components/ui';
-
-const PAGE_SIZE = 50;
-
-const BLANK_FILTERS = {
-  from: '',
-  to: '',
-  itemId: '',
-  userId: '',
-  action: '',
-  notes: '',
-};
 
 const COLUMNS = [
   { key: 'created_at', label: 'Date', align: 'left' },
@@ -37,74 +33,68 @@ const COLUMNS = [
   { key: 'notes', label: 'Notes', align: 'left' },
 ];
 
-export default function HistoryClient() {
+/** Identity of a full result set: filters + sort + page. */
+function queryKey(filters, sort, page) {
+  return JSON.stringify([filters, sort, page]);
+}
+
+export default function HistoryClient({
+  initialRows = [],
+  initialTotal = 0,
+  initialItems = [],
+  initialUsers = [],
+  initialError = '',
+}) {
   const supabase = createClient();
 
-  const [rows, setRows] = useState([]);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
+  // Seeded from the server render: the first page, default sort and no
+  // filters are already on screen, so navigating here shows no spinner.
+  const [rows, setRows] = useState(initialRows);
+  const [total, setTotal] = useState(initialTotal);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(initialError);
 
-  const [items, setItems] = useState([]);
-  const [users, setUsers] = useState([]);
+  const [items] = useState(initialItems);
+  const [users] = useState(() =>
+    initialUsers.map((user) => ({
+      id: user.id,
+      label: user.full_name || user.email?.split('@')[0] || 'Unknown',
+    }))
+  );
 
-  const [filters, setFilters] = useState(BLANK_FILTERS);
-  const [sort, setSort] = useState({ key: 'created_at', dir: 'desc' });
+  const [filters, setFilters] = useState(BLANK_HISTORY_FILTERS);
+  const [sort, setSort] = useState(DEFAULT_HISTORY_SORT);
   const [page, setPage] = useState(0);
 
-  // Filter options. Loaded once — these lists are small and change rarely.
-  useEffect(() => {
-    let cancelled = false;
-
-    (async () => {
-      const [itemsRes, usersRes] = await Promise.all([
-        supabase.from('items').select('id, name').order('name'),
-        supabase.from('profiles').select('id, email, full_name').order('email'),
-      ]);
-
-      if (cancelled) return;
-      setItems(itemsRes.data ?? []);
-      setUsers(
-        (usersRes.data ?? []).map((user) => ({
-          id: user.id,
-          label: user.full_name || user.email?.split('@')[0] || 'Unknown',
-        }))
-      );
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [supabase]);
+  /*
+   * Which query the rows on screen already represent. Seeded with the exact
+   * query the server ran, so mounting does not refetch what we were just given.
+   *
+   * Keyed on the parameters rather than a "first run" flag: React StrictMode
+   * invokes effects twice in development, which flips a boolean guard and lets
+   * the second run fetch anyway. Comparing parameters is idempotent, so it
+   * behaves the same however many times the effect runs.
+   */
+  const loadedKey = useRef(
+    queryKey(BLANK_HISTORY_FILTERS, DEFAULT_HISTORY_SORT, 0)
+  );
+  // Total only changes when the filters change, so paging and re-sorting reuse
+  // the count already in hand rather than making PostgREST count again.
+  const countedFor = useRef(historyCountKey(BLANK_HISTORY_FILTERS));
 
   const load = useCallback(async () => {
     setLoading(true);
     setError('');
 
-    let query = supabase
-      .from('inventory_history_view')
-      .select(
-        'id, item_id, item_name, item_code, category_name, action_type, quantity_changed, new_total, notes, user_id, user_name, created_at',
-        { count: 'exact' }
-      );
+    const countKey = historyCountKey(filters);
+    const withCount = countedFor.current !== countKey;
 
-    if (filters.from) query = query.gte('created_at', new Date(filters.from).toISOString());
-    if (filters.to) {
-      // The date input gives a day; include everything up to its final moment.
-      const end = new Date(filters.to);
-      end.setHours(23, 59, 59, 999);
-      query = query.lte('created_at', end.toISOString());
-    }
-    if (filters.itemId) query = query.eq('item_id', filters.itemId);
-    if (filters.userId) query = query.eq('user_id', filters.userId);
-    if (filters.action) query = query.eq('action_type', filters.action);
-    if (filters.notes.trim()) query = query.ilike('notes', `%${filters.notes.trim()}%`);
-
-    query = query
-      .order(sort.key, { ascending: sort.dir === 'asc', nullsFirst: false })
-      .range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1);
-
-    const { data, error: queryError, count } = await query;
+    const { data, error: queryError, count } = await buildHistoryQuery(supabase, {
+      filters,
+      sort,
+      page,
+      withCount,
+    });
 
     if (queryError) {
       setError(queryError.message);
@@ -112,14 +102,20 @@ export default function HistoryClient() {
       setTotal(0);
     } else {
       setRows(data ?? []);
-      setTotal(count ?? 0);
+      if (withCount) {
+        countedFor.current = countKey;
+        setTotal(count ?? 0);
+      }
     }
     setLoading(false);
   }, [supabase, filters, sort, page]);
 
   useEffect(() => {
+    const key = queryKey(filters, sort, page);
+    if (loadedKey.current === key) return;
+    loadedKey.current = key;
     load();
-  }, [load]);
+  }, [load, filters, sort, page]);
 
   // Any filter change invalidates the current page number.
   function updateFilter(patch) {
@@ -141,9 +137,9 @@ export default function HistoryClient() {
     [filters]
   );
 
-  const lastPage = Math.max(0, Math.ceil(total / PAGE_SIZE) - 1);
-  const rangeStart = total === 0 ? 0 : page * PAGE_SIZE + 1;
-  const rangeEnd = Math.min(total, (page + 1) * PAGE_SIZE);
+  const lastPage = Math.max(0, Math.ceil(total / HISTORY_PAGE_SIZE) - 1);
+  const rangeStart = total === 0 ? 0 : page * HISTORY_PAGE_SIZE + 1;
+  const rangeEnd = Math.min(total, (page + 1) * HISTORY_PAGE_SIZE);
 
   return (
     <div className="space-y-4">
@@ -160,7 +156,7 @@ export default function HistoryClient() {
           <Button
             variant="secondary"
             onClick={() => {
-              setFilters(BLANK_FILTERS);
+              setFilters(BLANK_HISTORY_FILTERS);
               setPage(0);
             }}
           >
@@ -340,7 +336,7 @@ export default function HistoryClient() {
           </EmptyState>
         )}
 
-        {total > PAGE_SIZE && (
+        {total > HISTORY_PAGE_SIZE && (
           <div className="flex items-center justify-between border-t border-slate-200 px-4 py-3">
             <p className="text-xs text-slate-500">
               Page {page + 1} of {lastPage + 1}

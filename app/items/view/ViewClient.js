@@ -17,7 +17,7 @@ import { createClient } from '@/lib/supabase/client';
 import { canCredit } from '@/lib/constants';
 import { compare, nextSort } from '@/lib/table';
 import { isLowStock, lowStockRowClass } from '@/lib/stock';
-import { MIGRATION_HINT, selectItems } from '@/lib/items';
+import { ITEM_LIST_COLUMNS, MIGRATION_HINT, normaliseItemRow, selectItems } from '@/lib/items';
 import Modal from '@/components/Modal';
 import { ToastStack, useToasts } from '@/components/Toast';
 import {
@@ -53,15 +53,23 @@ const COLUMNS = [
   { key: 'current_stock', label: 'Stock', align: 'right' },
 ];
 
-export default function ViewClient({ roleName }) {
+export default function ViewClient({
+  roleName,
+  initialItems = [],
+  initialCategories = [],
+  initialAlertsSupported = true,
+  initialError = '',
+}) {
   const supabase = createClient();
   const mayCredit = canCredit(roleName);
 
-  const [rows, setRows] = useState([]);
-  const [categories, setCategories] = useState([]);
-  const [alertsSupported, setAlertsSupported] = useState(true);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
+  // Seeded from the server render, so the table has rows on first paint and
+  // never shows a loading spinner on navigation. load() below still runs for
+  // realtime updates and after every stock change.
+  const [rows, setRows] = useState(() => initialItems.map(normaliseItemRow));
+  const [categories, setCategories] = useState(initialCategories);
+  const [alertsSupported, setAlertsSupported] = useState(initialAlertsSupported);
+  const [error, setError] = useState(initialError);
   const { toasts, pushToast, dismissToast } = useToasts();
 
   const [filters, setFilters] = useState(BLANK_FILTERS);
@@ -84,10 +92,7 @@ export default function ViewClient({ roleName }) {
 
   const load = useCallback(async () => {
     const [itemsRes, categoriesRes] = await Promise.all([
-      selectItems(
-        supabase,
-        'id, name, shortcut_code, category_id, size, unit, current_stock, is_important, display_order, categories(name)'
-      ),
+      selectItems(supabase, ITEM_LIST_COLUMNS),
       supabase.from('categories').select('id, name').order('name'),
     ]);
 
@@ -96,23 +101,10 @@ export default function ViewClient({ roleName }) {
     } else {
       setError('');
       setAlertsSupported(itemsRes.alertSizeSupported);
-      // Flatten the embedded category so it can be sorted and filtered like
-      // any other column.
-      setRows(
-        (itemsRes.data ?? []).map((row) => ({
-          ...row,
-          current_stock: Number(row.current_stock ?? 0),
-          category_name: row.categories?.name ?? '',
-        }))
-      );
+      setRows((itemsRes.data ?? []).map(normaliseItemRow));
       setCategories(categoriesRes.data ?? []);
     }
-    setLoading(false);
   }, [supabase]);
-
-  useEffect(() => {
-    load();
-  }, [load]);
 
   // Keep the table live when someone else moves stock. Requires Realtime to be
   // enabled for `items`; without it this simply never fires and the table still
@@ -307,8 +299,6 @@ export default function ViewClient({ roleName }) {
       return next;
     });
   }
-
-  if (loading) return <Spinner label="Loading items" />;
 
   return (
     <div className="space-y-4">

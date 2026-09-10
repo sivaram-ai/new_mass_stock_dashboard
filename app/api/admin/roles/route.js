@@ -1,16 +1,14 @@
 import { createAdminClient } from '@/lib/supabase/admin';
 import { requireAdmin } from '@/lib/requireAdmin';
 import { validateRoleCreate } from '@/lib/validation';
+import { listRoles } from '@/lib/adminData';
 
 export const dynamic = 'force-dynamic';
 
 /** GET /api/admin/roles — list roles. Any signed-in user (needed for dropdowns). */
 export async function GET() {
   const supabase = createAdminClient();
-  const { data, error } = await supabase
-    .from('custom_roles')
-    .select('id, role_name, description, created_at')
-    .order('role_name');
+  const { data, error } = await listRoles(supabase);
 
   if (error) {
     console.error('roles list failed', error);
