@@ -1,9 +1,21 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { FolderOpen, Package, Pencil, Plus, Star, Trash2 } from 'lucide-react';
+import {
+  ArrowDown,
+  ArrowUp,
+  ChevronsUpDown,
+  FolderOpen,
+  Package,
+  Pencil,
+  Plus,
+  RotateCcw,
+  Star,
+  Trash2,
+} from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 import { UNITS } from '@/lib/constants';
+import { compare, nextSort } from '@/lib/table';
 import Modal from '@/components/Modal';
 import {
   Alert,
@@ -28,6 +40,27 @@ const BLANK_ITEM = {
   opening_stock: '',
 };
 
+const BLANK_FILTERS = {
+  q: '',
+  name: '',
+  code: '',
+  category: '',
+  size: '',
+  unit: '',
+  important: '',
+  stock: '',
+};
+
+const ITEM_COLUMNS = [
+  { key: 'display_order', label: 'Order', align: 'right' },
+  { key: 'name', label: 'Item', align: 'left' },
+  { key: 'shortcut_code', label: 'Code', align: 'left' },
+  { key: 'category_name', label: 'Category', align: 'left' },
+  { key: 'size', label: 'Size', align: 'left' },
+  { key: 'unit', label: 'Unit', align: 'left' },
+  { key: 'current_stock', label: 'Stock', align: 'right' },
+];
+
 export default function ConfigClient() {
   const supabase = createClient();
 
@@ -40,6 +73,10 @@ export default function ConfigClient() {
   const [newCategory, setNewCategory] = useState('');
   const [savingCategory, setSavingCategory] = useState(false);
   const [editingCategory, setEditingCategory] = useState(null);
+  const [categoryQuery, setCategoryQuery] = useState('');
+
+  const [filters, setFilters] = useState(BLANK_FILTERS);
+  const [sort, setSort] = useState({ key: 'display_order', dir: 'asc' });
 
   const [itemModalOpen, setItemModalOpen] = useState(false);
   const [itemForm, setItemForm] = useState(BLANK_ITEM);
@@ -54,7 +91,7 @@ export default function ConfigClient() {
       supabase
         .from('items')
         .select(
-          'id, name, shortcut_code, category_id, size, unit, current_stock, is_important, display_order'
+          'id, name, shortcut_code, category_id, size, unit, current_stock, is_important, display_order, categories(name)'
         )
         .order('display_order', { ascending: true })
         .order('name', { ascending: true }),
@@ -64,7 +101,15 @@ export default function ConfigClient() {
       setError((categoriesRes.error || itemsRes.error).message);
     } else {
       setCategories(categoriesRes.data ?? []);
-      setItems(itemsRes.data ?? []);
+      // Flatten the embedded category so it sorts and filters like any other
+      // column, and coerce stock to a number so it sorts numerically.
+      setItems(
+        (itemsRes.data ?? []).map((row) => ({
+          ...row,
+          current_stock: Number(row.current_stock ?? 0),
+          category_name: row.categories?.name ?? '',
+        }))
+      );
     }
     setLoading(false);
   }, [supabase]);
@@ -77,6 +122,70 @@ export default function ConfigClient() {
     const map = new Map(categories.map((category) => [category.id, category.name]));
     return (id) => map.get(id) ?? 'Uncategorised';
   }, [categories]);
+
+  const units = useMemo(
+    () => [...new Set(items.map((item) => item.unit).filter(Boolean))].sort(),
+    [items]
+  );
+
+  const visibleCategories = useMemo(() => {
+    const q = categoryQuery.trim().toLowerCase();
+    return q ? categories.filter((c) => c.name.toLowerCase().includes(q)) : categories;
+  }, [categories, categoryQuery]);
+
+  const visibleItems = useMemo(() => {
+    const q = filters.q.trim().toLowerCase();
+
+    const filtered = items.filter((row) => {
+      if (
+        q &&
+        ![row.name, row.shortcut_code, row.size, row.unit, row.category_name]
+          .filter(Boolean)
+          .some((value) => String(value).toLowerCase().includes(q))
+      ) {
+        return false;
+      }
+      if (filters.name && !row.name?.toLowerCase().includes(filters.name.toLowerCase())) {
+        return false;
+      }
+      if (
+        filters.code &&
+        !(row.shortcut_code ?? '').toLowerCase().includes(filters.code.toLowerCase())
+      ) {
+        return false;
+      }
+      if (filters.category) {
+        if (filters.category === '__none__') {
+          if (row.category_id) return false;
+        } else if (row.category_id !== filters.category) {
+          return false;
+        }
+      }
+      if (filters.size && !(row.size ?? '').toLowerCase().includes(filters.size.toLowerCase())) {
+        return false;
+      }
+      if (filters.unit && row.unit !== filters.unit) return false;
+      if (filters.important === 'yes' && !row.is_important) return false;
+      if (filters.important === 'no' && row.is_important) return false;
+      if (filters.stock === 'in' && row.current_stock <= 0) return false;
+      if (filters.stock === 'out' && row.current_stock > 0) return false;
+      return true;
+    });
+
+    return [...filtered].sort((a, b) => {
+      const primary = compare(a, b, sort.key, sort.dir);
+      return primary !== 0 ? primary : compare(a, b, 'name', 'asc');
+    });
+  }, [items, filters, sort]);
+
+  const filtersActive = useMemo(
+    () => Object.values(filters).some((value) => value !== ''),
+    [filters]
+  );
+
+  function toggleSort(key) {
+    setSort((current) => nextSort(current, key));
+  }
 
   function flash(message) {
     setNotice(message);
@@ -272,12 +381,40 @@ export default function ConfigClient() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-lg font-semibold text-slate-900">Item configuration</h1>
-          <p className="text-sm text-slate-500">Manage categories and the item catalogue.</p>
+          <p className="text-sm text-slate-500">
+            {visibleItems.length} of {items.length} items · {categories.length} categories
+          </p>
         </div>
-        <Button onClick={openCreateItem}>
-          <Plus className="h-4 w-4" aria-hidden="true" />
-          New item
-        </Button>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <Input
+            value={filters.q}
+            onChange={(event) => setFilters({ ...filters, q: event.target.value })}
+            placeholder="Search items…"
+            aria-label="Search items"
+            className="w-52"
+          />
+          <Select
+            value={filters.important}
+            onChange={(event) => setFilters({ ...filters, important: event.target.value })}
+            aria-label="Filter by importance"
+            className="w-36"
+          >
+            <option value="">All items</option>
+            <option value="yes">Important</option>
+            <option value="no">Normal</option>
+          </Select>
+          {filtersActive && (
+            <Button variant="secondary" onClick={() => setFilters(BLANK_FILTERS)}>
+              <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
+              Clear
+            </Button>
+          )}
+          <Button onClick={openCreateItem}>
+            <Plus className="h-4 w-4" aria-hidden="true" />
+            New item
+          </Button>
+        </div>
       </div>
 
       {error && <Alert tone="error">{error}</Alert>}
@@ -304,13 +441,29 @@ export default function ConfigClient() {
             </Button>
           </form>
 
+          {categories.length > 6 && (
+            <div className="border-b border-slate-100 px-4 pb-3">
+              <Input
+                value={categoryQuery}
+                onChange={(event) => setCategoryQuery(event.target.value)}
+                placeholder="Search categories…"
+                aria-label="Search categories"
+                className="py-1.5 text-xs"
+              />
+            </div>
+          )}
+
           {categories.length === 0 ? (
             <EmptyState icon={FolderOpen} title="No categories yet">
               Categories group items on the dashboard so you can plan orders.
             </EmptyState>
+          ) : visibleCategories.length === 0 ? (
+            <EmptyState icon={FolderOpen} title="No matching categories">
+              Nothing matches “{categoryQuery}”.
+            </EmptyState>
           ) : (
             <ul className="divide-y divide-slate-100">
-              {categories.map((category) => {
+              {visibleCategories.map((category) => {
                 const count = items.filter((item) => item.category_id === category.id).length;
                 const editing = editingCategory?.id === category.id;
 
@@ -378,81 +531,189 @@ export default function ConfigClient() {
           <div className="flex items-center gap-2 border-b border-slate-200 px-5 py-3">
             <Package className="h-4 w-4 text-slate-400" aria-hidden="true" />
             <h2 className="text-sm font-semibold text-slate-900">Items</h2>
-            <Badge className="ml-auto">{items.length}</Badge>
+            <Badge className="ml-auto">
+              {filtersActive ? `${visibleItems.length} / ${items.length}` : items.length}
+            </Badge>
           </div>
 
-          {items.length === 0 ? (
-            <EmptyState icon={Package} title="No items yet">
-              Add your first item to start tracking stock.
-            </EmptyState>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead className="border-b border-slate-200 bg-slate-50 text-left text-xs text-slate-500">
-                  <tr>
-                    <th scope="col" className="px-4 py-2 font-medium">Order</th>
-                    <th scope="col" className="px-4 py-2 font-medium">Item</th>
-                    <th scope="col" className="px-4 py-2 font-medium">Category</th>
-                    <th scope="col" className="px-4 py-2 font-medium">Size / Unit</th>
-                    <th scope="col" className="px-4 py-2 text-right font-medium">Stock</th>
-                    <th scope="col" className="px-4 py-2 text-right font-medium">
-                      <span className="sr-only">Actions</span>
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {items.map((item) => (
-                    <tr key={item.id} className="hover:bg-slate-50">
-                      <td className="tnum px-4 py-2.5 text-slate-400">{item.display_order}</td>
-                      <td className="px-4 py-2.5">
-                        <div className="flex items-center gap-1.5">
-                          {item.is_important && (
-                            <Star
-                              className="h-3.5 w-3.5 shrink-0 fill-amber-400 text-amber-400"
-                              aria-label="Important"
-                            />
-                          )}
-                          <span className="font-medium text-slate-900">{item.name}</span>
-                        </div>
-                        {item.shortcut_code && (
-                          <span className="text-xs text-slate-400">{item.shortcut_code}</span>
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[820px] text-sm">
+              <thead className="bg-slate-50 text-left text-xs text-slate-500">
+                <tr className="border-b border-slate-200">
+                  {ITEM_COLUMNS.map((column) => {
+                    const active = sort.key === column.key;
+                    const Icon = active
+                      ? sort.dir === 'asc'
+                        ? ArrowUp
+                        : ArrowDown
+                      : ChevronsUpDown;
+                    return (
+                      <th
+                        key={column.key}
+                        scope="col"
+                        className={`px-4 py-2 font-medium ${
+                          column.align === 'right' ? 'text-right' : ''
+                        }`}
+                        aria-sort={
+                          active ? (sort.dir === 'asc' ? 'ascending' : 'descending') : 'none'
+                        }
+                      >
+                        <button
+                          type="button"
+                          onClick={() => toggleSort(column.key)}
+                          className={`inline-flex items-center gap-1 hover:text-slate-900 ${
+                            active ? 'text-slate-900' : ''
+                          }`}
+                        >
+                          {column.label}
+                          <Icon className="h-3 w-3" aria-hidden="true" />
+                        </button>
+                      </th>
+                    );
+                  })}
+                  <th scope="col" className="px-4 py-2 text-right font-medium">
+                    <span className="sr-only">Actions</span>
+                  </th>
+                </tr>
+
+                {/* Per-column filters, matching the Inventory table. */}
+                <tr className="border-b border-slate-200 bg-white">
+                  <td className="px-4 py-2" />
+                  <td className="px-4 py-2">
+                    <Input
+                      value={filters.name}
+                      onChange={(event) => setFilters({ ...filters, name: event.target.value })}
+                      placeholder="Filter"
+                      aria-label="Filter by name"
+                      className="py-1 text-xs"
+                    />
+                  </td>
+                  <td className="px-4 py-2">
+                    <Input
+                      value={filters.code}
+                      onChange={(event) => setFilters({ ...filters, code: event.target.value })}
+                      placeholder="Filter"
+                      aria-label="Filter by code"
+                      className="py-1 text-xs"
+                    />
+                  </td>
+                  <td className="px-4 py-2">
+                    <Select
+                      value={filters.category}
+                      onChange={(event) =>
+                        setFilters({ ...filters, category: event.target.value })
+                      }
+                      aria-label="Filter by category"
+                      className="py-1 text-xs"
+                    >
+                      <option value="">All</option>
+                      <option value="__none__">Uncategorised</option>
+                      {categories.map((category) => (
+                        <option key={category.id} value={category.id}>
+                          {category.name}
+                        </option>
+                      ))}
+                    </Select>
+                  </td>
+                  <td className="px-4 py-2">
+                    <Input
+                      value={filters.size}
+                      onChange={(event) => setFilters({ ...filters, size: event.target.value })}
+                      placeholder="Filter"
+                      aria-label="Filter by size"
+                      className="py-1 text-xs"
+                    />
+                  </td>
+                  <td className="px-4 py-2">
+                    <Select
+                      value={filters.unit}
+                      onChange={(event) => setFilters({ ...filters, unit: event.target.value })}
+                      aria-label="Filter by unit"
+                      className="py-1 text-xs"
+                    >
+                      <option value="">All</option>
+                      {units.map((unit) => (
+                        <option key={unit} value={unit}>
+                          {unit}
+                        </option>
+                      ))}
+                    </Select>
+                  </td>
+                  <td className="px-4 py-2">
+                    <Select
+                      value={filters.stock}
+                      onChange={(event) => setFilters({ ...filters, stock: event.target.value })}
+                      aria-label="Filter by stock level"
+                      className="py-1 text-xs"
+                    >
+                      <option value="">All</option>
+                      <option value="in">In stock</option>
+                      <option value="out">Out of stock</option>
+                    </Select>
+                  </td>
+                  <td className="px-4 py-2" />
+                </tr>
+              </thead>
+
+              <tbody className="divide-y divide-slate-100">
+                {visibleItems.map((item) => (
+                  <tr key={item.id} className="hover:bg-slate-50">
+                    <td className="tnum px-4 py-2.5 text-right text-slate-400">
+                      {item.display_order}
+                    </td>
+                    <td className="px-4 py-2.5">
+                      <div className="flex items-center gap-1.5">
+                        {item.is_important && (
+                          <Star
+                            className="h-3.5 w-3.5 shrink-0 fill-amber-400 text-amber-400"
+                            aria-label="Important"
+                          />
                         )}
-                      </td>
-                      <td className="px-4 py-2.5 text-slate-600">
-                        {categoryName(item.category_id)}
-                      </td>
-                      <td className="px-4 py-2.5 text-slate-600">
-                        {[item.size, item.unit].filter(Boolean).join(' / ') || '—'}
-                      </td>
-                      <td className="tnum px-4 py-2.5 text-right font-medium text-slate-900">
-                        {Number(item.current_stock ?? 0)}
-                      </td>
-                      <td className="px-4 py-2.5">
-                        <div className="flex justify-end gap-1">
-                          <Button
-                            size="icon"
-                            variant="ghost"
-                            aria-label={`Edit ${item.name}`}
-                            onClick={() => openEditItem(item)}
-                          >
-                            <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
-                          </Button>
-                          <Button
-                            size="icon"
-                            variant="ghost"
-                            aria-label={`Delete ${item.name}`}
-                            className="text-red-500 hover:bg-red-50"
-                            onClick={() => deleteItem(item)}
-                          >
-                            <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
-                          </Button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                        <span className="font-medium text-slate-900">{item.name}</span>
+                      </div>
+                    </td>
+                    <td className="px-4 py-2.5 text-slate-500">{item.shortcut_code || '—'}</td>
+                    <td className="px-4 py-2.5 text-slate-600">
+                      {categoryName(item.category_id)}
+                    </td>
+                    <td className="px-4 py-2.5 text-slate-600">{item.size || '—'}</td>
+                    <td className="px-4 py-2.5 text-slate-600">{item.unit || '—'}</td>
+                    <td className="tnum px-4 py-2.5 text-right font-medium text-slate-900">
+                      {item.current_stock}
+                    </td>
+                    <td className="px-4 py-2.5">
+                      <div className="flex justify-end gap-1">
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          aria-label={`Edit ${item.name}`}
+                          onClick={() => openEditItem(item)}
+                        >
+                          <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
+                        </Button>
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          aria-label={`Delete ${item.name}`}
+                          className="text-red-500 hover:bg-red-50"
+                          onClick={() => deleteItem(item)}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                        </Button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {visibleItems.length === 0 && (
+            <EmptyState icon={Package} title={items.length ? 'No matching items' : 'No items yet'}>
+              {items.length
+                ? 'Try clearing the filters.'
+                : 'Add your first item to start tracking stock.'}
+            </EmptyState>
           )}
         </Card>
       </div>

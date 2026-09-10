@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 import { canCredit } from '@/lib/constants';
+import { compare, nextSort } from '@/lib/table';
 import Modal from '@/components/Modal';
 import {
   Alert,
@@ -48,26 +49,6 @@ const COLUMNS = [
   { key: 'display_order', label: 'Order', align: 'right' },
   { key: 'current_stock', label: 'Stock', align: 'right' },
 ];
-
-/** Nulls always sort last, whichever direction the column is pointing. */
-function compare(a, b, key, dir) {
-  const av = a[key];
-  const bv = b[key];
-  const aEmpty = av === null || av === undefined || av === '';
-  const bEmpty = bv === null || bv === undefined || bv === '';
-  if (aEmpty && bEmpty) return 0;
-  if (aEmpty) return 1;
-  if (bEmpty) return -1;
-
-  const result =
-    typeof av === 'number' && typeof bv === 'number'
-      ? av - bv
-      : typeof av === 'boolean' && typeof bv === 'boolean'
-        ? Number(av) - Number(bv)
-        : String(av).localeCompare(String(bv), undefined, { numeric: true, sensitivity: 'base' });
-
-  return dir === 'asc' ? result : -result;
-}
 
 export default function ViewClient({ roleName }) {
   const supabase = createClient();
@@ -202,11 +183,7 @@ export default function ViewClient({ roleName }) {
   );
 
   function toggleSort(key) {
-    setSort((current) =>
-      current.key === key
-        ? { key, dir: current.dir === 'asc' ? 'desc' : 'asc' }
-        : { key, dir: 'asc' }
-    );
+    setSort((current) => nextSort(current, key));
   }
 
   function qtyFor(id) {

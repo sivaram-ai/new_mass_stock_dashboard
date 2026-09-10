@@ -11,6 +11,16 @@ export default function Modal({ open, onClose, title, subtitle, size = 'md', chi
   const panelRef = useRef(null);
   const restoreRef = useRef(null);
 
+  // Callers pass an inline arrow for onClose, so its identity changes on every
+  // parent render. Keeping it in a ref lets the effect below depend on `open`
+  // alone — otherwise every keystroke in a field tore the effect down (which
+  // restores focus to the trigger) and re-ran it (which focuses the panel),
+  // knocking the caret out of whatever input was being typed into.
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  });
+
   useEffect(() => {
     if (!open) return undefined;
 
@@ -19,7 +29,7 @@ export default function Modal({ open, onClose, title, subtitle, size = 'md', chi
     document.body.style.overflow = 'hidden';
 
     const onKeyDown = (event) => {
-      if (event.key === 'Escape') onClose?.();
+      if (event.key === 'Escape') onCloseRef.current?.();
     };
     document.addEventListener('keydown', onKeyDown);
 
@@ -31,7 +41,7 @@ export default function Modal({ open, onClose, title, subtitle, size = 'md', chi
       document.body.style.overflow = overflow;
       if (restoreRef.current instanceof HTMLElement) restoreRef.current.focus();
     };
-  }, [open, onClose]);
+  }, [open]);
 
   if (!open) return null;
 
