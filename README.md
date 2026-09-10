@@ -209,7 +209,7 @@ Work through this in order — each step sets up the next.
 14. Filter with the per-column boxes under the headers, and the search box.
 15. Set a row's quantity box to `5` and press **+** → stock rises by 5 instantly.
 16. Press **−** → stock falls by 5.
-17. **A toast appears bottom-right** showing the item, Added/Removed, the quantity and the new total. **The table does not move.**
+17. **A toast appears bottom-left** showing the item, Added/Removed, the quantity and the new total. **The table does not move, and the toast never covers the +/- buttons.**
 18. Click **−** five times fast → five toasts stack, none overwrite each other, rows stay put, and each clears itself after ~4 seconds.
 19. Debit more than you have → a red toast reads "Insufficient stock…" and nothing changes.
 20. Debit `Basmati Rice` below its alert size of 20 → **the row turns red immediately** and shows a `Low` badge. The alert size number itself is **not** shown on this page.
@@ -446,11 +446,12 @@ Highlighting recalculates from the stock number in the page, so it updates the m
 
 ### Toast notifications
 
-Crediting or debiting on the Inventory page raises a toast in the bottom-right rather than a banner in the page body.
+Crediting or debiting on the Inventory page raises a toast in the bottom-left rather than a banner in the page body.
 
 The banner was the problem it fixes: it occupied layout space, so it pushed every inventory row down as it appeared and let them snap back as it cleared. During quick repeated clicks a row could move under the cursor between clicks and the wrong item got adjusted.
 
 - The stack is `position: fixed`, so **rows never move**.
+- It sits **bottom-left**, clear of the +/- buttons on the right of each row. Toasts are clickable so they can be dismissed, so on the right they covered the very buttons being clicked and a rapid run of adjustments blocked itself.
 - Each click adds its own toast; they stack, newest on top, and never overwrite one another.
 - Each shows the item name, whether stock was Added or Removed, the quantity, and the resulting total.
 - Toasts clear themselves after 4 seconds, or on the × button.

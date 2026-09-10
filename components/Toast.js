@@ -83,18 +83,23 @@ const TONES = {
 };
 
 /**
- * Fixed-position toast stack.
+ * Fixed-position toast stack, anchored bottom-LEFT.
  *
  * `fixed` keeps it out of document flow entirely — the inventory rows behind it
  * never move, which is the whole point: a row that shifts under a rapid
  * click-through gets the wrong item credited or debited.
+ *
+ * Left rather than right because the inventory table's +/- buttons sit at the
+ * far right of every row, and each toast is `pointer-events-auto` so it can be
+ * dismissed. Stacked on the right they covered the very buttons being clicked,
+ * so a rapid run of adjustments ended up blocking itself.
  */
 export function ToastStack({ toasts, onDismiss }) {
   if (!toasts.length) return null;
 
   return (
     <div
-      className="pointer-events-none fixed bottom-4 right-4 z-[60] flex w-[min(22rem,calc(100vw-2rem))] flex-col gap-2"
+      className="pointer-events-none fixed bottom-4 left-4 z-[60] flex w-[min(22rem,calc(100vw-2rem))] flex-col gap-2"
       role="region"
       aria-label="Notifications"
     >
